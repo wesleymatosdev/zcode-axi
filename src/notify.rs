@@ -97,9 +97,12 @@ impl NotifyOutcome {
     }
 }
 
-/// Send one telegram alert via hermes. Direct argv — no shell, message text
-/// can never be interpreted as arguments.
+/// Send one telegram alert via hermes. Direct argv — no shell. The message
+/// rides on stdin (`hermes send` reads stdin per its own usage: "If omitted,
+/// read from --file or stdin"); the real hermes build rejects a positional
+/// message under the venv python, so argv carries only `send telegram`.
 pub fn send_telegram(msg: &str) -> NotifyOutcome {
+    use std::io::Write as _;
     let (python, hermes) = hermes_cmd();
     if !python.exists() || !hermes.exists() {
         return NotifyOutcome::skipped(&format!(
@@ -108,13 +111,35 @@ pub fn send_telegram(msg: &str) -> NotifyOutcome {
             hermes.display()
         ));
     }
-    match Command::new(&python)
+    let mut child = match Command::new(&python)
         .arg(&hermes)
         .arg("send")
-        .arg("telegram")
-        .arg(msg)
-        .output()
+        .arg("--to")
+        .arg("telegram:W")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
+        Ok(c) => c,
+        Err(e) => {
+            return NotifyOutcome {
+                attempted: true,
+                ok: false,
+                detail: format!("spawn failed: {e}"),
+            }
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(e) = stdin.write_all(msg.as_bytes()) {
+            return NotifyOutcome {
+                attempted: true,
+                ok: false,
+                detail: format!("stdin write failed: {e}"),
+            };
+        }
+    }
+    match child.wait_with_output() {
         Ok(out) if out.status.success() => NotifyOutcome {
             attempted: true,
             ok: true,

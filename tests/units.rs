@@ -703,25 +703,27 @@ fn telegram_message_format() {
 static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Build a fake $HOME containing stub `hermes` + venv python scripts that
-/// record their argv to `<home>/calls.log` and exit with a configurable code.
+/// record their argv AND stdin to `<home>/calls.log` and exit with a
+/// configurable code.
 fn fake_hermes_home(dir: &std::path::Path, exit_code: i32) -> std::path::PathBuf {
     let bin = dir.join(".hermes/hermes-agent/venv/bin");
     std::fs::create_dir_all(&bin).expect("create bin dir");
     std::fs::create_dir_all(dir.join(".hermes/hermes-agent")).expect("create agent dir");
 
+    // Logging stub: reads stdin (the message transport) + argv, exits with
+    // the configured code. Invoked as: python3 stub.py <calls.log> <hermes argv...>
     let stub = dir.join("stub.py");
     std::fs::write(
         &stub,
         format!(
-            "import sys\nwith open(sys.argv[1], 'a') as f:\n    f.write(repr(sys.argv[2:]) + '\\n')\nsys.exit({exit_code})\n"
+            "import sys\ndata = sys.stdin.read()\nwith open(sys.argv[1], 'a') as f:\n    f.write('STDIN:' + data + '\\n')\n    f.write('ARGV:' + repr(sys.argv[2:]) + '\\n')\nsys.exit({exit_code})\n"
         ),
     )
     .expect("write stub");
-    // venv python: a shell script invoking the real python with the stub's
-    // log path appended via env, so argv[1] = calls.log, argv[2:] = hermes argv.
+    // venv python: shell wrapper delegating to the stub; stdin passes through.
     let py = format!(
-        "#!/bin/sh\nexec /usr/bin/env python3 '{stub_dir}' \"$HOME/calls.log\" \"$@\"\n",
-        stub_dir = stub.display()
+        "#!/bin/sh\nexec /usr/bin/env python3 '{stub_path}' \"$HOME/calls.log\" \"$@\"\n",
+        stub_path = stub.display()
     );
     std::fs::write(bin.join("python"), py).expect("write python stub");
     // hermes: plain shell script appending its own argv.
@@ -760,8 +762,12 @@ fn send_telegram_mock_success_invokes_hermes_with_exact_argv() {
     assert!(outcome.attempted && outcome.ok, "outcome: {outcome:?}");
     let log = std::fs::read_to_string(home.join("calls.log")).expect("calls log");
     assert!(
-        log.contains("send") && log.contains("telegram"),
-        "argv must include `send telegram`: {log}"
+        log.contains("STDIN:zcode-axi: t: start -> awaiting_approval"),
+        "message must be piped via stdin: {log}"
+    );
+    assert!(
+        log.contains("'send', '--to', 'telegram:W']"),
+        "argv must be `send --to telegram:W` with no positional message: {log}"
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
