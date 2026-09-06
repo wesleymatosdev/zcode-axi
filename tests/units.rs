@@ -696,6 +696,119 @@ fn telegram_message_format() {
     );
 }
 
+// ------------------------------------------------- telegram dispatch (mocked)
+
+/// Serializes tests that mutate the process-global HOME env var (cargo runs
+/// tests in parallel threads; unsynchronized set_var would race).
+static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Build a fake $HOME containing stub `hermes` + venv python scripts that
+/// record their argv to `<home>/calls.log` and exit with a configurable code.
+fn fake_hermes_home(dir: &std::path::Path, exit_code: i32) -> std::path::PathBuf {
+    let bin = dir.join(".hermes/hermes-agent/venv/bin");
+    std::fs::create_dir_all(&bin).expect("create bin dir");
+    std::fs::create_dir_all(dir.join(".hermes/hermes-agent")).expect("create agent dir");
+
+    let stub = dir.join("stub.py");
+    std::fs::write(
+        &stub,
+        format!(
+            "import sys\nwith open(sys.argv[1], 'a') as f:\n    f.write(repr(sys.argv[2:]) + '\\n')\nsys.exit({exit_code})\n"
+        ),
+    )
+    .expect("write stub");
+    // venv python: a shell script invoking the real python with the stub's
+    // log path appended via env, so argv[1] = calls.log, argv[2:] = hermes argv.
+    let py = format!(
+        "#!/bin/sh\nexec /usr/bin/env python3 '{stub_dir}' \"$HOME/calls.log\" \"$@\"\n",
+        stub_dir = stub.display()
+    );
+    std::fs::write(bin.join("python"), py).expect("write python stub");
+    // hermes: plain shell script appending its own argv.
+    std::fs::write(
+        dir.join(".hermes/hermes-agent/hermes"),
+        "#!/bin/sh\nprintf '%s\\n' \"hermes $*\" >> \"$HOME/calls.log\"\nexit 0\n",
+    )
+    .expect("write hermes stub");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [bin.join("python"), dir.join(".hermes/hermes-agent/hermes")] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod stub");
+        }
+    }
+    dir.to_path_buf()
+}
+
+#[test]
+fn send_telegram_mock_success_invokes_hermes_with_exact_argv() {
+    use zcode_axi::notify::send_telegram;
+
+    let tmp = std::env::temp_dir().join(format!("zw-notify-ok-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let home = fake_hermes_home(&tmp, 0);
+
+    let _guard = HOME_LOCK.lock().unwrap();
+    // SAFETY: HOME mutation is serialized by HOME_LOCK across test threads.
+    unsafe { std::env::set_var("HOME", &home) };
+    let outcome = send_telegram("zcode-axi: t: start -> awaiting_approval");
+    unsafe { std::env::remove_var("HOME") };
+    drop(_guard);
+
+    assert!(outcome.attempted && outcome.ok, "outcome: {outcome:?}");
+    let log = std::fs::read_to_string(home.join("calls.log")).expect("calls log");
+    assert!(
+        log.contains("send") && log.contains("telegram"),
+        "argv must include `send telegram`: {log}"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn send_telegram_mock_failure_reports_exit_and_stderr() {
+    use zcode_axi::notify::send_telegram;
+
+    let tmp = std::env::temp_dir().join(format!("zw-notify-fail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let home = fake_hermes_home(&tmp, 3);
+
+    let _guard = HOME_LOCK.lock().unwrap();
+    // SAFETY: HOME mutation is serialized by HOME_LOCK across test threads.
+    unsafe { std::env::set_var("HOME", &home) };
+    let outcome = send_telegram("zcode-axi: t: start -> awaiting_approval");
+    unsafe { std::env::remove_var("HOME") };
+    drop(_guard);
+
+    assert!(outcome.attempted && !outcome.ok, "outcome: {outcome:?}");
+    assert!(outcome.detail.contains("exit 3"), "detail: {outcome:?}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn send_telegram_missing_hermes_is_skipped_not_attempted() {
+    use zcode_axi::notify::send_telegram;
+
+    let tmp = std::env::temp_dir().join(format!("zw-notify-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create empty home");
+
+    let _guard = HOME_LOCK.lock().unwrap();
+    // SAFETY: HOME mutation is serialized by HOME_LOCK across test threads.
+    unsafe { std::env::set_var("HOME", &tmp) };
+    let outcome = send_telegram("zcode-axi: t: start -> awaiting_approval");
+    unsafe { std::env::remove_var("HOME") };
+    drop(_guard);
+
+    assert!(!outcome.attempted, "outcome: {outcome:?}");
+    assert!(
+        outcome.detail.contains("hermes not found"),
+        "detail: {outcome:?}"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 // ------------------------------------------------------- watch event shape
 
 /// Field order in the serialized JSON is the struct declaration order —

@@ -121,6 +121,15 @@ pub enum Command {
         limit: usize,
     },
 
+    /// Send one telegram alert through the real notify transport and print
+    /// the outcome as JSON. Transport smoke test; no screen access.
+    #[command(name = "notify-test")]
+    NotifyTest {
+        /// Message text to send.
+        #[arg(long)]
+        message: String,
+    },
+
     /// NOT A USER COMMAND: canned app-server used by unit tests. Named
     /// `app-server` so the real client's fixed argv (`<exe> app-server`)
     /// reaches it.

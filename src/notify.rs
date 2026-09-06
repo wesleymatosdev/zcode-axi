@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+use serde_json::json;
+
 use crate::classify::State;
+use crate::error::{AxiError, AxiResult};
 
 /// Minimum spacing between alerts for the SAME state.
 pub const RATE_LIMIT: Duration = Duration::from_secs(5 * 60);
@@ -131,5 +134,27 @@ pub fn send_telegram(msg: &str) -> NotifyOutcome {
             ok: false,
             detail: format!("spawn failed: {e}"),
         },
+    }
+}
+
+/// `notify-test` subcommand: one real dispatch through `send_telegram`, the
+/// exact function the watch loop calls. Prints the outcome as one JSON line.
+pub fn cmd_notify_test(message: &str) -> AxiResult<()> {
+    let outcome = send_telegram(message);
+    println!(
+        "{}",
+        json!({
+            "attempted": outcome.attempted,
+            "ok": outcome.ok,
+            "detail": outcome.detail,
+        })
+    );
+    if outcome.attempted && outcome.ok {
+        Ok(())
+    } else {
+        Err(AxiError::Runtime(format!(
+            "telegram dispatch did not succeed: {}",
+            outcome.detail
+        )))
     }
 }

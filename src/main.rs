@@ -5,6 +5,7 @@ use clap::Parser;
 use zcode_axi::cli::{Cli, Command, OutputOpts};
 use zcode_axi::commands;
 use zcode_axi::error::{exit, AxiError, AxiResult};
+use zcode_axi::notify;
 use zcode_axi::poc;
 use zcode_axi::runtime::Runtime;
 use zcode_axi::watch;
@@ -42,6 +43,7 @@ fn main() -> std::process::ExitCode {
             };
         }
         Command::Tasks { limit } => watch::cmd_tasks(opts, *limit),
+        Command::NotifyTest { message } => notify::cmd_notify_test(message),
         Command::Poc { out } => {
             return match crate::poc::cmd_poc(out) {
                 Ok(()) => std::process::ExitCode::SUCCESS,
@@ -72,7 +74,7 @@ fn main() -> std::process::ExitCode {
                 Command::Watch { .. } | Command::Tasks { .. } | Command::FakeAppServer => {
                     unreachable!("handled above")
                 }
-                Command::Poc { .. } => unreachable!("handled above"),
+                Command::Poc { .. } | Command::NotifyTest { .. } => unreachable!("handled above"),
             }
         }
     };
