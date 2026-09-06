@@ -2,7 +2,7 @@
 //! OFFICIAL zcode runtime. See docs/protocol.md and docs/EXIT-CODES.md.
 
 use clap::Parser;
-use zcode_axi::cli::{Cli, Command, OutputOpts};
+use zcode_axi::cli::{Cli, Command, GuiQueueCmd, OutputOpts};
 use zcode_axi::commands;
 use zcode_axi::error::{exit, AxiError, AxiResult};
 use zcode_axi::notify;
@@ -19,9 +19,27 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(commands::fake_app_server_main() as u8);
     }
 
-    // Watch and tasks never touch the zcode runtime (screen + task index
-    // only), so they must not fail on a missing zcode binary.
+    // The GUI dispatch lane and the non-runtime commands below never touch
+    // the zcode runtime (queue files, screen + task index only), so they
+    // must not fail on a missing zcode binary.
     let result: AxiResult<()> = match &cli.command {
+        Command::Run {
+            gui: true,
+            cwd,
+            brief,
+            mode,
+            notify,
+            ..
+        } => {
+            let brief = brief
+                .as_deref()
+                .expect("clap enforces --gui requires --brief");
+            commands::cmd_run_gui(opts, cwd, brief, mode.as_deref(), notify.as_deref())
+        }
+        Command::GuiQueue { cmd } => match cmd {
+            GuiQueueCmd::List => commands::cmd_gui_queue_list(opts),
+            GuiQueueCmd::Claim { id } => commands::cmd_gui_queue_claim(opts, id),
+        },
         Command::Watch {
             window_substr,
             interval_ms,
@@ -58,10 +76,18 @@ fn main() -> std::process::ExitCode {
             match &cli.command {
                 Command::Status => commands::cmd_status(&rt, opts),
                 Command::Run {
+                    gui: false,
                     cwd,
                     goal,
                     max_turns,
-                } => commands::cmd_run(&rt, opts, cwd, goal, *max_turns),
+                    ..
+                } => commands::cmd_run(
+                    &rt,
+                    opts,
+                    cwd,
+                    goal.as_deref().expect("clap enforces goal unless --gui"),
+                    *max_turns,
+                ),
                 Command::Sessions => commands::cmd_sessions(&rt, opts),
                 Command::Inspect { id } => commands::cmd_inspect(&rt, opts, id),
                 Command::Wait { id, timeout } => commands::cmd_wait(&rt, id, *timeout),
@@ -75,6 +101,9 @@ fn main() -> std::process::ExitCode {
                     unreachable!("handled above")
                 }
                 Command::Poc { .. } | Command::NotifyTest { .. } => unreachable!("handled above"),
+                Command::Run { gui: true, .. } | Command::GuiQueue { .. } => {
+                    unreachable!("handled above")
+                }
             }
         }
     };

@@ -6,7 +6,7 @@ stderr as `zcode-axi: <message> (exit N)` so callers can branch on either.
 | Code | Meaning | Produced by |
 |------|---------|-------------|
 | 0 | ok | any successful command |
-| 1 | runtime error | zcode missing/failing, headless run non-zero exit, app-server protocol error, session store unusable, session not found |
+| 1 | runtime error | zcode missing/failing, headless run non-zero exit, app-server protocol error, session store unusable, session not found, `run --gui` with a missing brief file, `gui-queue claim` of an unknown id |
 | 2 | usage | argument parser (missing/conflicting flags, bad subcommand) |
 | 3 | not authenticated | headless run failed with an auth-looking error (login/401/oauth/credential markers in stderr) |
 | 4 | timeout | `wait` exceeded `--timeout`; app-server frame deadline (15s) exceeded |

@@ -1297,3 +1297,333 @@ fn packaging_sign_script_never_touches_keychain_or_tcc() {
         "one-time block must document the import/verification commands"
     );
 }
+
+// ------------------------------------------------------ gui dispatch lane
+
+/// Serializes tests that mutate the process-global ZCODE_AXI_GUI_QUEUE_DIR
+/// env var (cargo runs tests in parallel threads; unsynchronized set_var
+/// would race) — same pattern as HOME_LOCK above.
+static QUEUE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn set_queue_dir(dir: &std::path::Path) {
+    // SAFETY: mutation is serialized by QUEUE_LOCK across test threads.
+    unsafe { std::env::set_var(zcode_axi::gui_queue::QUEUE_DIR_ENV, dir) };
+}
+
+fn unset_queue_dir() {
+    // SAFETY: mutation is serialized by QUEUE_LOCK across test threads.
+    unsafe { std::env::remove_var(zcode_axi::gui_queue::QUEUE_DIR_ENV) };
+}
+
+fn write_brief(dir: &std::path::Path, name: &str) -> PathBuf {
+    let p = dir.join(name);
+    std::fs::write(&p, "BRIEF: do the thing\n").unwrap();
+    p
+}
+
+#[test]
+fn gui_queue_entry_json_shape_is_deterministic() {
+    use zcode_axi::gui_queue::QueueEntry;
+
+    let entry = QueueEntry {
+        id: "20260906T204512-do-thing".into(),
+        created_at: 1_788_717_912_000,
+        brief_path: "/b/do-thing.txt".into(),
+        cwd: "/w".into(),
+        mode: "gui".into(),
+        notify: Some("telegram:W".into()),
+        status: "queued".into(),
+        attempts: 0,
+    };
+    // Field order is the on-disk contract (serde emits declaration order).
+    assert_eq!(
+        serde_json::to_string(&entry).unwrap(),
+        r#"{"id":"20260906T204512-do-thing","created_at":1788717912000,"brief_path":"/b/do-thing.txt","cwd":"/w","mode":"gui","notify":"telegram:W","status":"queued","attempts":0}"#
+    );
+
+    // Unset notify stays an explicit key (null), never omitted.
+    let minimal = QueueEntry {
+        notify: None,
+        ..entry
+    };
+    let s = serde_json::to_string(&minimal).unwrap();
+    assert!(s.contains(r#""notify":null"#), "got: {s}");
+}
+
+#[test]
+fn slugify_and_unique_stem_collision_rules() {
+    use zcode_axi::gui_queue::{slugify, unique_stem};
+
+    assert_eq!(slugify("/a/b/zcode-gui-lane.txt"), "zcode-gui-lane");
+    assert_eq!(slugify("My Brief!.md"), "my-brief");
+    assert_eq!(slugify("///"), "brief", "empty stem falls back");
+
+    let none = |_s: &str| false;
+    assert_eq!(unique_stem("base".into(), &none), "base");
+
+    let one_taken = |s: &str| s == "base";
+    assert_eq!(unique_stem("base".into(), &one_taken), "base-2");
+
+    let two_taken = |s: &str| s == "base" || s == "base-2";
+    assert_eq!(unique_stem("base".into(), &two_taken), "base-3");
+}
+
+#[test]
+fn gui_run_enqueues_valid_request_with_required_fields() {
+    let dir = tempdir("gui-lane-enqueue");
+    let qdir = dir.join("queue");
+    let brief = write_brief(&dir, "do-thing.txt");
+
+    let _guard = QUEUE_LOCK.lock().unwrap();
+    set_queue_dir(&qdir);
+    let out = bin()
+        .args([
+            "--json",
+            "run",
+            "--gui",
+            "--cwd",
+            "/tmp/w",
+            "--brief",
+            brief.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    unset_queue_dir();
+    drop(_guard);
+
+    assert_eq!(out.status.code(), Some(exit::OK as i32));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json doc");
+    let qfile = PathBuf::from(doc["queued_file"].as_str().expect("queued_file"));
+
+    let entry: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&qfile).unwrap()).expect("queue json");
+    for field in [
+        "id",
+        "created_at",
+        "brief_path",
+        "cwd",
+        "mode",
+        "notify",
+        "status",
+        "attempts",
+    ] {
+        assert!(entry.get(field).is_some(), "missing field {field}: {entry}");
+    }
+    assert_eq!(entry["status"], "queued");
+    assert_eq!(entry["attempts"], 0);
+    assert_eq!(entry["cwd"], "/tmp/w");
+    assert_eq!(entry["mode"], "gui");
+    assert_eq!(entry["brief_path"], brief.to_str().unwrap());
+    assert!(
+        entry["created_at"].as_i64().unwrap() > 1_700_000_000_000,
+        "created_at is epoch ms"
+    );
+
+    // Filename embeds a 15-char UTC timestamp and the brief-derived slug.
+    let name = qfile.file_name().unwrap().to_str().unwrap();
+    let stem = name.strip_suffix(".json").unwrap();
+    assert_eq!(doc["id"], stem, "id is the file stem");
+    let prefix = stem.strip_suffix("-do-thing").expect("slug in filename");
+    assert_eq!(prefix.len(), 15, "YYYYMMDDTHHMMSS timestamp: {stem}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn gui_enqueue_same_slug_twice_never_collides() {
+    use zcode_axi::gui_queue;
+
+    let dir = tempdir("gui-lane-collision");
+    let qdir = dir.join("queue");
+    let brief = write_brief(&dir, "collision.txt");
+
+    let _guard = QUEUE_LOCK.lock().unwrap();
+    set_queue_dir(&qdir);
+    let first = gui_queue::enqueue(brief.to_str().unwrap(), "/w", "gui", None).unwrap();
+    let second = gui_queue::enqueue(brief.to_str().unwrap(), "/w", "gui", None).unwrap();
+    unset_queue_dir();
+    drop(_guard);
+
+    assert_ne!(first.1, second.1, "queue files must never collide");
+    assert_ne!(first.0.id, second.0.id);
+    // Same-second dispatch of one brief: the second file is <same-stem>-2.
+    if second
+        .1
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("-2.json")
+    {
+        let stem = second.0.id.strip_suffix("-2").expect("suffix form");
+        assert_eq!(first.0.id, stem);
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn gui_flag_arg_gating_is_enforced_by_clap() {
+    // --gui requires --brief...
+    let out = bin()
+        .args(["run", "--cwd", "/tmp", "--gui"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2));
+    // ...and --brief is only meaningful with --gui.
+    let out = bin()
+        .args(["run", "--cwd", "/tmp", "--brief", "x.txt"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2));
+    // goal and brief are mutually exclusive.
+    let out = bin()
+        .args([
+            "run", "--cwd", "/tmp", "--goal", "g", "--gui", "--brief", "x.txt",
+        ])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn gui_run_missing_brief_file_fails_before_enqueue() {
+    let dir = tempdir("gui-lane-missing-brief");
+    let qdir = dir.join("queue");
+
+    let _guard = QUEUE_LOCK.lock().unwrap();
+    set_queue_dir(&qdir);
+    let out = bin()
+        .args([
+            "run",
+            "--gui",
+            "--cwd",
+            "/tmp",
+            "--brief",
+            "/nonexistent/b.txt",
+        ])
+        .output()
+        .expect("spawn");
+    unset_queue_dir();
+    drop(_guard);
+
+    assert_eq!(out.status.code(), Some(exit::RUNTIME_ERROR as i32));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("brief file not found"), "{err}");
+    assert!(
+        !qdir.exists() || std::fs::read_dir(&qdir).unwrap().count() == 0,
+        "nothing may be enqueued when the brief is missing"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn gui_queue_list_output_shape() {
+    use zcode_axi::gui_queue;
+
+    let dir = tempdir("gui-lane-list");
+    let qdir = dir.join("queue");
+    let brief_a = write_brief(&dir, "task-a.txt");
+    let brief_b = write_brief(&dir, "task-b.txt");
+
+    let _guard = QUEUE_LOCK.lock().unwrap();
+    set_queue_dir(&qdir);
+    gui_queue::enqueue(brief_a.to_str().unwrap(), "/w", "gui", None).unwrap();
+    gui_queue::enqueue(brief_b.to_str().unwrap(), "/w", "gui", None).unwrap();
+
+    let json_out = bin()
+        .args(["--json", "gui-queue", "list"])
+        .output()
+        .expect("spawn");
+    let compact_out = bin().args(["gui-queue", "list"]).output().expect("spawn");
+    unset_queue_dir();
+    drop(_guard);
+
+    assert_eq!(json_out.status.code(), Some(exit::OK as i32));
+    let doc: serde_json::Value = serde_json::from_slice(&json_out.stdout).expect("json list doc");
+    assert_eq!(doc["count"], 2);
+    assert_eq!(doc["entries"].as_array().unwrap().len(), 2);
+    for e in doc["entries"].as_array().unwrap() {
+        assert!(e["id"].is_string() && e["status"].is_string());
+        assert_eq!(e["status"], "queued");
+        assert!(e["created_at"].is_i64());
+    }
+
+    assert_eq!(compact_out.status.code(), Some(exit::OK as i32));
+    let text = String::from_utf8_lossy(&compact_out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "one line per entry: {text}");
+    for line in &lines {
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols.len(), 5, "id/status/attempts/created/brief: {line}");
+        assert_eq!(cols[1], "queued");
+    }
+    // Newest first: task-b (enqueued second) leads.
+    assert!(lines[0].contains("task-b"), "{text}");
+    assert!(lines[1].contains("task-a"), "{text}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn gui_queue_claim_flips_status_in_place() {
+    use zcode_axi::gui_queue;
+
+    let dir = tempdir("gui-lane-claim");
+    let qdir = dir.join("queue");
+    let brief = write_brief(&dir, "claimable.txt");
+
+    let _guard = QUEUE_LOCK.lock().unwrap();
+    set_queue_dir(&qdir);
+    let (entry, path) = gui_queue::enqueue(brief.to_str().unwrap(), "/w", "gui", None).unwrap();
+
+    let out = bin()
+        .args(["gui-queue", "claim", &entry.id])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(exit::OK as i32));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("status=claimed"), "{stdout}");
+    assert!(stdout.contains(&path.display().to_string()), "{stdout}");
+
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(on_disk["status"], "claimed");
+    assert_eq!(on_disk["attempts"], 0, "claim does not touch attempts");
+    assert_eq!(on_disk["id"], entry.id.as_str());
+
+    // Claiming again is idempotent (same file, still claimed, exit 0).
+    let again = bin()
+        .args(["gui-queue", "claim", &entry.id])
+        .output()
+        .expect("spawn");
+    assert_eq!(again.status.code(), Some(exit::OK as i32));
+    unset_queue_dir();
+    drop(_guard);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn gui_queue_claim_unknown_id_exits_documented_error_code() {
+    let dir = tempdir("gui-lane-claim-unknown");
+    let qdir = dir.join("queue");
+
+    let _guard = QUEUE_LOCK.lock().unwrap();
+    set_queue_dir(&qdir);
+    let out = bin()
+        .args(["gui-queue", "claim", "no-such-id"])
+        .output()
+        .expect("spawn");
+    unset_queue_dir();
+    drop(_guard);
+
+    assert_eq!(out.status.code(), Some(exit::RUNTIME_ERROR as i32));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not found"), "{err}");
+    assert!(
+        err.contains("(exit 1)"),
+        "stderr names the exit code: {err}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -34,19 +34,39 @@ pub enum Command {
     Status,
 
     /// Dispatch a headless run and print its session id and exit code.
+    /// With --gui, no runtime spawn happens: a GUI dispatch request is
+    /// written to the queue directory for the coordinator's GUI driver.
     Run {
         /// Working directory for the run (passed as --cwd).
         #[arg(long)]
         cwd: String,
 
-        /// Prompt text for the headless run.
-        #[arg(long)]
-        goal: String,
+        /// Prompt text for the headless run (required unless --brief).
+        #[arg(long, required_unless_present = "brief", conflicts_with = "brief")]
+        goal: Option<String>,
 
         /// Max model turns. Forwarded to the runtime only if it supports the
         /// flag; otherwise a warning is printed and the run proceeds without.
         #[arg(long)]
         max_turns: Option<u32>,
+
+        /// Enqueue a GUI dispatch request instead of spawning the headless
+        /// runner, so the work is visible in the ZCode GUI once the
+        /// coordinator's driver drains the queue.
+        #[arg(long, requires = "brief")]
+        gui: bool,
+
+        /// Brief file the GUI worker should execute (required with --gui).
+        #[arg(long, requires = "gui")]
+        brief: Option<String>,
+
+        /// Execution mode recorded in the queue entry (default "gui").
+        #[arg(long, requires = "gui")]
+        mode: Option<String>,
+
+        /// Telegram target recorded in the queue entry (e.g. telegram:W).
+        #[arg(long, requires = "gui")]
+        notify: Option<String>,
     },
 
     /// List sessions known to the runtime (live via app-server).
@@ -130,11 +150,30 @@ pub enum Command {
         message: String,
     },
 
+    /// Inspect/drive the GUI dispatch queue (file handoff to the GUI
+    /// driver). Purely local JSON files; never touches ~/.zcode.
+    GuiQueue {
+        #[command(subcommand)]
+        cmd: GuiQueueCmd,
+    },
+
     /// NOT A USER COMMAND: canned app-server used by unit tests. Named
     /// `app-server` so the real client's fixed argv (`<exe> app-server`)
     /// reaches it.
     #[command(name = "app-server", hide = true)]
     FakeAppServer,
+}
+
+/// Subcommands for the GUI dispatch queue lane.
+#[derive(Debug, Subcommand)]
+pub enum GuiQueueCmd {
+    /// List queued/claimed GUI dispatch requests (newest first).
+    List,
+    /// Mark a queued request as claimed by the GUI driver.
+    Claim {
+        /// Queue entry id (the `<timestamp>-<slug>` file stem).
+        id: String,
+    },
 }
 
 /// Options that select an output format. Derived from global flags.

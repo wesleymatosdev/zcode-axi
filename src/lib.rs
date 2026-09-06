@@ -6,6 +6,7 @@ pub mod cli;
 pub mod commands;
 pub mod error;
 pub mod framediff;
+pub mod gui_queue;
 pub mod notify;
 pub mod ocr;
 pub mod output;

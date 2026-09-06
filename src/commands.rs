@@ -2,12 +2,14 @@
 //! every command honors --json/--pretty/--full and prints truncation hints.
 
 use std::io::Write;
+use std::path::Path;
 
 use serde::Serialize;
 use serde_json::json;
 
 use crate::cli::{validate_session_id, Format, OutputOpts};
 use crate::error::{exit, AxiError, AxiResult};
+use crate::gui_queue;
 use crate::output::{fmt_ms, oneline, truncate};
 use crate::proto::{AppServerClient, SessionInfo};
 use crate::runtime::{HeadlessArgs, Runtime};
@@ -281,6 +283,136 @@ pub fn render_run(doc: &RunDoc, format: Format) -> String {
         }
     }
     out
+}
+
+// ------------------------------------------------------------- gui lane
+
+/// Handoff confirmation for a GUI dispatch request (enqueue or claim).
+#[derive(Serialize)]
+pub struct GuiDispatchDoc {
+    pub queued_file: String,
+    pub id: String,
+    pub status: String,
+}
+
+/// `run --gui`: validate the brief pointer, enqueue the dispatch request,
+/// print the queue file. No runtime spawn, no ~/.zcode access.
+pub fn cmd_run_gui(
+    opts: OutputOpts,
+    cwd: &str,
+    brief: &str,
+    mode: Option<&str>,
+    notify: Option<&str>,
+) -> AxiResult<()> {
+    if !Path::new(brief).is_file() {
+        return Err(AxiError::Runtime(format!("brief file not found: {brief}")));
+    }
+    let (entry, path) = gui_queue::enqueue(
+        brief,
+        cwd,
+        mode.unwrap_or("gui"),
+        notify.map(str::to_string),
+    )?;
+    let doc = GuiDispatchDoc {
+        queued_file: path.display().to_string(),
+        id: entry.id,
+        status: entry.status,
+    };
+    print!("{}", render_gui_dispatch(&doc, opts.format));
+    Ok(())
+}
+
+/// `gui-queue claim`: flip one entry to status "claimed".
+pub fn cmd_gui_queue_claim(opts: OutputOpts, id: &str) -> AxiResult<()> {
+    let (entry, path) = gui_queue::claim(id)?;
+    let doc = GuiDispatchDoc {
+        queued_file: path.display().to_string(),
+        id: entry.id,
+        status: entry.status,
+    };
+    print!("{}", render_gui_dispatch(&doc, opts.format));
+    Ok(())
+}
+
+/// Pure renderer for the enqueue/claim handoff confirmation.
+pub fn render_gui_dispatch(doc: &GuiDispatchDoc, format: Format) -> String {
+    let mut out = String::new();
+    match format {
+        Format::Json => {
+            out.push_str(&serde_json::to_string(doc).unwrap_or_default());
+            out.push('\n');
+        }
+        Format::Pretty => {
+            use std::fmt::Write as _;
+            let _ = writeln!(out, "queued_file: {}", doc.queued_file);
+            let _ = writeln!(out, "id:          {}", doc.id);
+            let _ = writeln!(out, "status:      {}", doc.status);
+        }
+        Format::Compact => {
+            use std::fmt::Write as _;
+            let _ = writeln!(
+                out,
+                "queued_file={}\tid={}\tstatus={}",
+                doc.queued_file, doc.id, doc.status
+            );
+        }
+    }
+    out
+}
+
+#[derive(Serialize)]
+struct GuiQueueDoc {
+    count: usize,
+    queue_dir: String,
+    entries: Vec<gui_queue::QueueEntry>,
+}
+
+/// `gui-queue list`: every entry in the queue, newest first.
+pub fn cmd_gui_queue_list(opts: OutputOpts) -> AxiResult<()> {
+    let (entries, skipped) = gui_queue::list()?;
+    match opts.format {
+        Format::Json => {
+            let doc = GuiQueueDoc {
+                count: entries.len(),
+                queue_dir: gui_queue::queue_dir().display().to_string(),
+                entries,
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&doc).map_err(|e| AxiError::Runtime(e.to_string()))?
+            );
+        }
+        Format::Pretty => {
+            for e in &entries {
+                println!(
+                    "{:<34} {:<8} {:>3} {:<20} {}",
+                    e.id,
+                    e.status,
+                    e.attempts,
+                    fmt_ms(e.created_at),
+                    e.brief_path
+                );
+            }
+        }
+        Format::Compact => {
+            for e in &entries {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    e.id,
+                    e.status,
+                    e.attempts,
+                    fmt_ms(e.created_at),
+                    e.brief_path
+                );
+            }
+        }
+    }
+    if skipped > 0 {
+        note(&format!(
+            "{skipped} unparseable queue file(s) skipped; inspect the queue dir manually"
+        ));
+    }
+    Ok(())
 }
 
 // -------------------------------------------------------------- sessions
