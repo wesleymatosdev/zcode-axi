@@ -490,3 +490,340 @@ fn local_moment_offset_is_minus_three_hours() {
     // round-trip
     assert_eq!(m.to_unix(), 1_788_395_400);
 }
+
+// ---------------------------------------------------------------- classify
+
+#[test]
+fn classifier_fixture_samples_per_state() {
+    use zcode_axi::classify::{classify, State};
+
+    // awaiting_approval: dialog headline + its buttons (OCR jumble included)
+    assert_eq!(
+        classify("Permission required\nzcode wants to run a command\nAlways Allow  Allow Once"),
+        Some(State::AwaitingApproval)
+    );
+    assert_eq!(classify("AWAITING APPROVAL"), Some(State::AwaitingApproval));
+    assert_eq!(classify("Allow Once"), Some(State::AwaitingApproval));
+
+    // running: status-line phrasings
+    assert_eq!(classify("Working for 12s"), Some(State::Running));
+    assert_eq!(classify("Thinking..."), Some(State::Running));
+    assert_eq!(classify("zcode  working for  1m 03s"), Some(State::Running));
+
+    // done
+    assert_eq!(classify("Task completed"), Some(State::Done));
+
+    // no marker → unknown (callers keep previous state)
+    assert_eq!(classify(""), None);
+    assert_eq!(classify("terminal — bash — 80x24"), None);
+    assert_eq!(classify("some random transcript text"), None);
+}
+
+#[test]
+fn classifier_matches_across_line_breaks_and_case() {
+    // OCR frequently breaks a phrase across lines; whitespace-normalization
+    // must still match.
+    assert_eq!(
+        zcode_axi::classify::classify("Permission\n  required"),
+        Some(zcode_axi::classify::State::AwaitingApproval)
+    );
+    assert_eq!(
+        normalize_then_classify("permission\nrequired"),
+        Some(zcode_axi::classify::State::AwaitingApproval)
+    );
+    assert_eq!(
+        normalize_then_classify("TASK   completed"),
+        Some(zcode_axi::classify::State::Done)
+    );
+}
+
+fn normalize_then_classify(text: &str) -> Option<zcode_axi::classify::State> {
+    let normalized = zcode_axi::classify::normalize(text);
+    zcode_axi::classify::classify(&normalized)
+}
+
+#[test]
+fn classifier_precedence_dialog_beats_status_line() {
+    use zcode_axi::classify::{classify, State};
+    // A permission dialog can be open while the status line still reads
+    // "Working for Ns"; the dialog is the actionable state.
+    assert_eq!(
+        classify("Working for 5s\nPermission required\nAllow Once"),
+        Some(State::AwaitingApproval)
+    );
+}
+
+#[test]
+fn classifier_tasks_cross_check() {
+    use zcode_axi::classify::{tasks_support_done, Confidence};
+    use zcode_axi::tasks::TaskRow;
+
+    let completed = TaskRow {
+        task_id: "t1".into(),
+        task_status: "completed".into(),
+        title: "done deal".into(),
+        updated_at: 1,
+    };
+    let running = TaskRow {
+        task_id: "t2".into(),
+        task_status: "running".into(),
+        title: "still going".into(),
+        updated_at: 2,
+    };
+    assert!(tasks_support_done(Some(&completed)));
+    assert!(!tasks_support_done(Some(&running)));
+    assert!(!tasks_support_done(None));
+
+    assert_eq!(Confidence::Ocr.as_str(), "ocr");
+    assert_eq!(Confidence::OcrAndTasks.as_str(), "ocr+tasks");
+    assert_eq!(Confidence::TasksOnly.as_str(), "tasks");
+}
+
+// -------------------------------------------------------- rate limiting
+
+#[test]
+fn rate_limiter_one_alert_per_state_per_window() {
+    use std::time::Duration;
+
+    use zcode_axi::classify::State;
+    use zcode_axi::notify::{RateDecision, RateLimiter, RATE_LIMIT};
+
+    assert_eq!(RATE_LIMIT, Duration::from_secs(5 * 60));
+    let mut rl = RateLimiter::new(RATE_LIMIT);
+
+    // first alert for a state is always allowed
+    assert_eq!(rl.check(State::Running, 1_000), RateDecision::Allowed);
+
+    // same state inside the window is suppressed, with exact since_ms
+    assert_eq!(
+        rl.check(State::Running, 1_000 + 299_999),
+        RateDecision::Suppressed { since_ms: 299_999 }
+    );
+
+    // at the window boundary the state may alert again
+    assert_eq!(
+        rl.check(State::Running, 1_000 + 300_000),
+        RateDecision::Allowed
+    );
+
+    // a different state has an independent clock
+    assert_eq!(
+        rl.check(State::AwaitingApproval, 1_001),
+        RateDecision::Allowed
+    );
+    assert_eq!(
+        rl.check(State::AwaitingApproval, 1_002),
+        RateDecision::Suppressed { since_ms: 1 }
+    );
+}
+
+#[test]
+fn telegram_message_format() {
+    use zcode_axi::classify::State;
+    use zcode_axi::notify::message;
+
+    assert_eq!(
+        message("Fix the login bug", None, State::AwaitingApproval),
+        "zcode-axi: Fix the login bug: start -> awaiting_approval"
+    );
+    assert_eq!(
+        message("Fix the login bug", Some(State::Running), State::Done),
+        "zcode-axi: Fix the login bug: running -> done"
+    );
+}
+
+// ------------------------------------------------------- watch event shape
+
+/// Field order in the serialized JSON is the struct declaration order —
+/// the fixed, parseable contract for machine consumers.
+#[test]
+fn watch_event_json_shape_is_deterministic() {
+    use zcode_axi::watch::WatchEvent;
+
+    let minimal = WatchEvent {
+        ts: "2026-09-05 12:00:00Z".into(),
+        ts_ms: 1_788_616_800_000,
+        event: "watch_start",
+        from: None,
+        state: None,
+        confidence: None,
+        task_id: None,
+        task_title: None,
+        frame_hash: None,
+        diff_blocks: None,
+        notified: None,
+        notify_detail: None,
+        reason: None,
+        iterations: None,
+        states_seen: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&minimal).unwrap(),
+        r#"{"ts":"2026-09-05 12:00:00Z","ts_ms":1788616800000,"event":"watch_start"}"#
+    );
+
+    let transition = WatchEvent {
+        from: Some("running".into()),
+        state: Some("awaiting_approval".into()),
+        confidence: Some("ocr+tasks"),
+        task_id: Some("t_123".into()),
+        task_title: Some("Fix the login bug".into()),
+        frame_hash: Some("0123456789abcdef".into()),
+        diff_blocks: Some(210),
+        notified: Some(false),
+        notify_detail: Some("rate-limited: 12000ms since last awaiting_approval alert".into()),
+        reason: None,
+        iterations: Some(7),
+        states_seen: None,
+        ..minimal
+    };
+    assert_eq!(
+        serde_json::to_string(&transition).unwrap(),
+        r#"{"ts":"2026-09-05 12:00:00Z","ts_ms":1788616800000,"event":"watch_start","from":"running","state":"awaiting_approval","confidence":"ocr+tasks","task_id":"t_123","task_title":"Fix the login bug","frame_hash":"0123456789abcdef","diff_blocks":210,"notified":false,"notify_detail":"rate-limited: 12000ms since last awaiting_approval alert","iterations":7}"#
+    );
+}
+
+// --------------------------------------------------------------- framediff
+
+#[test]
+fn framediff_uniform_and_change_detection() {
+    use zcode_axi::framediff::{diff, is_uniform, signature, BLOCK_DELTA, SIG_H, SIG_W};
+
+    let (w, h) = (64usize, 36usize);
+    let frame = vec![90u8; w * h * 4]; // uniform gray
+    let sig_a = signature(&frame, w, h);
+    assert!(is_uniform(&sig_a), "solid frame must be uniform");
+
+    // repaint ~10% of blocks well past BLOCK_DELTA
+    let mut frame_b = frame.clone();
+    for y in 0..h / 10 {
+        for x in 0..w {
+            let i = (y * w + x) * 4;
+            frame_b[i] = 90 + BLOCK_DELTA * 4;
+            frame_b[i + 1] = 90 + BLOCK_DELTA * 4;
+            frame_b[i + 2] = 90 + BLOCK_DELTA * 4;
+        }
+    }
+    let sig_b = signature(&frame_b, w, h);
+    assert!(!is_uniform(&sig_b));
+    let change = diff(&sig_a, &sig_b);
+    assert!(change.changed, "a big repaint must register as changed");
+    assert!(change.diff_blocks >= SIG_W * SIG_H / 20);
+
+    // cursor-blink-sized change (a couple of blocks) must NOT count
+    let mut frame_c = frame.clone();
+    let i = 0;
+    frame_c[i] = 250;
+    let sig_c = signature(&frame_c, w, h);
+    assert!(
+        !diff(&sig_a, &sig_c).changed,
+        "tiny deltas stay below threshold"
+    );
+
+    // identical frames never differ
+    assert!(!diff(&sig_a, &sig_a).changed);
+}
+
+#[test]
+fn framediff_hash_is_stable_and_discriminating() {
+    use zcode_axi::framediff::{hash, signature};
+
+    let (w, h) = (32usize, 18usize);
+    let gray = vec![120u8; w * h * 4];
+    let black = vec![0u8; w * h * 4];
+    let h1 = hash(&signature(&gray, w, h));
+    let h2 = hash(&signature(&gray, w, h));
+    let h3 = hash(&signature(&black, w, h));
+    assert_eq!(h1, h2, "same pixels → same hash");
+    assert_ne!(h1, h3, "different pixels → different hash");
+}
+
+#[test]
+fn framediff_downscale_keeps_small_frames_intact() {
+    use zcode_axi::framediff::downscale_rgba;
+
+    let small = vec![7u8; 10 * 4 * 4]; // 10x4 RGBA
+    let (out, w, h) = downscale_rgba(&small, 10, 4, 2000);
+    assert_eq!((w, h), (10, 4));
+    assert_eq!(out, small);
+
+    let big = vec![9u8; 4000 * 100 * 4]; // 4000x100
+    let (out, w, h) = downscale_rgba(&big, 4000, 100, 2000);
+    assert_eq!(w, 2000);
+    assert_eq!(h, 50); // aspect preserved
+    assert_eq!(out.len(), w * h * 4);
+}
+
+// ------------------------------------------------------------------- tasks
+
+fn fixture_tasks_db(path: &std::path::Path) {
+    use rusqlite::Connection;
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TABLE tasks (
+          task_id text primary key, task_status text not null,
+          title text not null, updated_at integer not null,
+          deleted integer not null default 0
+        );
+        INSERT INTO tasks (task_id, task_status, title, updated_at, deleted)
+        VALUES ('t_old', 'completed', 'older completed task', 100, 0);
+        INSERT INTO tasks (task_id, task_status, title, updated_at, deleted)
+        VALUES ('t_new', 'running', 'newest task "in flight"', 200, 0);
+        INSERT INTO tasks (task_id, task_status, title, updated_at, deleted)
+        VALUES ('t_del', 'completed', 'soft-deleted row', 300, 1);
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn tasks_parse_rows_from_sqlite3_json() {
+    use zcode_axi::tasks::{parse_rows, TaskRow};
+
+    assert_eq!(parse_rows("").unwrap(), Vec::new());
+    assert_eq!(parse_rows("   \n ").unwrap(), Vec::new());
+
+    let rows = parse_rows(
+        r#"[{"task_id":"t1","task_status":"running","title":"do it","updated_at":123}]"#,
+    )
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![TaskRow {
+            task_id: "t1".into(),
+            task_status: "running".into(),
+            title: "do it".into(),
+            updated_at: 123,
+        }]
+    );
+
+    // malformed output is a runtime error, not a panic
+    assert!(parse_rows("not json").is_err());
+}
+
+#[test]
+fn tasks_latest_reads_via_sqlite3_subprocess() {
+    use zcode_axi::tasks::latest_tasks;
+
+    let dir = tempdir("tasks-db");
+    let db = dir.join("tasks-index.sqlite");
+    fixture_tasks_db(&db);
+
+    // ordering: most recently updated first; soft-deleted rows excluded.
+    let rows = latest_tasks(&db, 10).unwrap();
+    assert_eq!(rows.len(), 2, "deleted row must be filtered");
+    assert_eq!(rows[0].task_id, "t_new");
+    assert_eq!(rows[0].title, "newest task \"in flight\"");
+    assert_eq!(rows[1].task_id, "t_old");
+
+    // limit bounds the query
+    assert_eq!(latest_tasks(&db, 1).unwrap().len(), 1);
+
+    // missing db is a clean runtime error
+    let err = latest_tasks(&dir.join("nope.sqlite"), 1).unwrap_err();
+    assert!(matches!(err, AxiError::Runtime(_)));
+    assert!(err.to_string().contains("not found"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
