@@ -1,0 +1,1 @@
+Reply with exactly ZC_FLEET_OK and nothing else. Do not use any tools.

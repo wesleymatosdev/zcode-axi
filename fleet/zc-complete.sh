@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# zc-complete.sh — COORDINATOR-ONLY terminal status write.
+#
+# Usage: zc-complete.sh <task-id> <done|failed> <one-line-summary>
+#
+# Appends the terminal status line to fleet/state/<task-id>.status after
+# the coordinator has verified artifacts (commits, tests, reports). A
+# worker NEVER writes its own done — self-report does not close a task.
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+[ $# -eq 3 ] || { echo "usage: $0 <task-id> <done|failed> <one-line-summary>" >&2; exit 1; }
+task_id="$1"
+verdict="$2"
+summary="$3"
+
+case "$verdict" in
+  done | failed) ;;
+  *) echo "zc-complete: verdict must be 'done' or 'failed', got: $verdict" >&2; exit 1 ;;
+esac
+
+status="$FLEET_ROOT/state/$task_id.status"
+[ -f "$status" ] || { echo "zc-complete: no such task: $task_id" >&2; exit 1; }
+
+# Status lines are one line by definition.
+summary="${summary//$'\n'/ }"
+printf '%s: %s\n' "$verdict" "$summary" >>"$status"
+echo "$task_id -> $verdict"
