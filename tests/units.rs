@@ -1463,6 +1463,105 @@ fn gui_enqueue_same_slug_twice_never_collides() {
 }
 
 #[test]
+fn gui_concurrent_enqueues_never_lose_an_entry() {
+    // Regression for the review's F1 race: enqueue() probed a free stem and
+    // only later renamed into place, so two same-second enqueuers could pick
+    // the same id and the last rename silently clobbered the earlier entry
+    // while BOTH processes exited 0. Every exit-0 enqueue must leave exactly
+    // one queue file behind; ids must be globally distinct.
+    use std::sync::{Arc, Barrier};
+
+    let dir = tempdir("gui-lane-race");
+    let brief = write_brief(&dir, "race-brief.txt");
+    let _guard = QUEUE_LOCK.lock().unwrap();
+
+    const RACERS: usize = 16;
+    for round in 0..2 {
+        let qdir = dir.join(format!("queue-{round}"));
+        set_queue_dir(&qdir);
+        let barrier = Arc::new(Barrier::new(RACERS));
+        let handles: Vec<_> = (0..RACERS)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let brief = brief.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    bin()
+                        .args([
+                            "--json",
+                            "run",
+                            "--cwd",
+                            "/tmp",
+                            "--gui",
+                            "--brief",
+                            brief.to_str().unwrap(),
+                        ])
+                        .output()
+                        .expect("spawn")
+                })
+            })
+            .collect();
+        let mut ids = std::collections::BTreeSet::new();
+        let mut ok = 0usize;
+        for h in handles {
+            let out = h.join().unwrap();
+            assert_eq!(
+                out.status.code(),
+                Some(exit::OK as i32),
+                "enqueuer reported failure; the lane must stay silent-lossless"
+            );
+            ok += 1;
+            let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json doc");
+            let qf = PathBuf::from(doc["queued_file"].as_str().expect("queued_file"));
+            assert!(qf.exists(), "queued file {} must exist", qf.display());
+            ids.insert(qf.file_name().unwrap().to_string_lossy().into_owned());
+        }
+        let files = std::fs::read_dir(&qdir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .count();
+        assert_eq!(
+            files, ok,
+            "round {round}: {ok} exit-0 enqueues but only {files} queue files — silent clobber"
+        );
+        assert_eq!(
+            ids.len(),
+            ok,
+            "round {round}: duplicate ids across enqueuers"
+        );
+    }
+    unset_queue_dir();
+    drop(_guard);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn gui_enqueue_reservation_is_exclusive_for_same_stem_racers() {
+    use zcode_axi::gui_queue;
+
+    // Deterministic F1 pin at the reservation primitive: two same-second
+    // enqueuers probing the same free stem is exactly the clobber
+    // interleaving. The second racer must observe the first's reservation
+    // and take the next free stem — never the first's file.
+    let dir = tempdir("gui-lane-reserve");
+    let qdir = dir.join("queue");
+    std::fs::create_dir_all(&qdir).unwrap();
+
+    let winner = gui_queue::reserve_stem(&qdir, "20260906T120000-race".into()).unwrap();
+    let loser = gui_queue::reserve_stem(&qdir, "20260906T120000-race".into()).unwrap();
+
+    assert_eq!(winner, "20260906T120000-race");
+    assert_eq!(
+        loser, "20260906T120000-race-2",
+        "the losing racer must re-probe past the winner's reservation"
+    );
+    assert!(qdir.join("20260906T120000-race.json").exists());
+    assert!(qdir.join("20260906T120000-race-2.json").exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn gui_flag_arg_gating_is_enforced_by_clap() {
     // --gui requires --brief...
     let out = bin()

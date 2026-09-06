@@ -118,10 +118,8 @@ pub fn enqueue(
     std::fs::create_dir_all(&dir).map_err(|e| {
         AxiError::Runtime(format!("cannot create queue dir {}: {e}", dir.display()))
     })?;
-    let id = unique_stem(
-        format!("{}-{}", utc_stamp_now(), slugify(brief_path)),
-        &|stem| dir.join(format!("{stem}.json")).exists(),
-    );
+    let base = format!("{}-{}", utc_stamp_now(), slugify(brief_path));
+    let id = reserve_stem(&dir, base)?;
     let entry = QueueEntry {
         id: id.clone(),
         created_at: now_ms(),
@@ -133,12 +131,49 @@ pub fn enqueue(
         attempts: 0,
     };
     let path = dir.join(format!("{id}.json"));
-    write_atomic(
+    if let Err(e) = write_atomic(
         &path,
         &serde_json::to_string_pretty(&entry)
             .map_err(|e| AxiError::Runtime(format!("queue entry does not serialize: {e}")))?,
-    )?;
+    ) {
+        // Keep enqueue's failure contract: a failed enqueue leaves no queue
+        // file (only the reservation exists at this point).
+        let _ = std::fs::remove_file(&path);
+        return Err(e);
+    }
     Ok((entry, path))
+}
+
+/// Atomically claim a fresh id for one enqueue: pick the first free stem via
+/// [`unique_stem`], then reserve `dir/<stem>.json` with `create_new`. The
+/// probe alone races — two same-second enqueuers can both probe a free stem
+/// before either writes, and the later rename silently clobbers the earlier
+/// entry while both callers exit 0. `create_new` hands the name to exactly
+/// one caller; the loser re-probes past the winner's file. Returns the
+/// reserved id; the reserved empty file is finalized by [`write_atomic`]'s
+/// rename before [`enqueue`] returns.
+pub fn reserve_stem(dir: &Path, base: String) -> AxiResult<String> {
+    let exists = |stem: &str| dir.join(format!("{stem}.json")).exists();
+    loop {
+        let id = unique_stem(base.clone(), &exists);
+        let path = dir.join(format!("{id}.json"));
+        let reservation = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(reservation) => reservation,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(AxiError::Runtime(format!(
+                    "cannot reserve queue file {}: {e}",
+                    path.display()
+                )))
+            }
+        };
+        drop(reservation);
+        return Ok(id);
+    }
 }
 
 /// Every `*.json` queue file, newest (lexicographically greatest name)
