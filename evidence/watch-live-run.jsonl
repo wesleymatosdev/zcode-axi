@@ -1,0 +1,5 @@
+{"ts":"2026-09-06 00:39:38Z","ts_ms":1788655178044,"event":"watch_start","reason":"window=2560x30 interval_ms=1000 notify=none"}
+{"ts":"2026-09-06 00:39:38Z","ts_ms":1788655178293,"event":"state","state":"done","confidence":"tasks","task_id":"sess_2b8310c8-b008-423c-aaba-c791b4f7ba2e","task_title":"Refresh pending-reconciliation-20260905 to v2","frame_hash":"716cf2a3be22b54d","diff_blocks":0}
+{"ts":"2026-09-06 00:39:48Z","ts_ms":1788655188285,"event":"heartbeat","state":"done","iterations":9}
+{"ts":"2026-09-06 00:39:58Z","ts_ms":1788655198586,"event":"watch_end","reason":"duration","iterations":18,"states_seen":["done"]}
+exit=0

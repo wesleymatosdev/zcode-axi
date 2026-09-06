@@ -1,0 +1,2 @@
+zcode-axi: screen recording permission denied: no window matches --window-substr "ZCode" and only system surfaces are enumerable (Window Server — Menubar) — macOS hides other apps' windows when Screen Recording is not granted; grant it in System Settings > Privacy & Security > Screen Recording for the app running zcode-axi, then re-run. zcode-axi will not retry. (exit 6)
+exit=6
