@@ -6,6 +6,7 @@ use zcode_axi::cli::{Cli, Command, OutputOpts};
 use zcode_axi::commands;
 use zcode_axi::error::{exit, AxiError, AxiResult};
 use zcode_axi::runtime::Runtime;
+use zcode_axi::watch;
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
@@ -16,28 +17,56 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(commands::fake_app_server_main() as u8);
     }
 
-    let rt = match Runtime::discover(cli.zcode_bin.as_deref()) {
-        Ok(rt) => rt,
-        Err(e) => return fail(e),
-    };
-
+    // Watch and tasks never touch the zcode runtime (screen + task index
+    // only), so they must not fail on a missing zcode binary.
     let result: AxiResult<()> = match &cli.command {
-        Command::Status => commands::cmd_status(&rt, opts),
-        Command::Run {
-            cwd,
-            goal,
-            max_turns,
-        } => commands::cmd_run(&rt, opts, cwd, goal, *max_turns),
-        Command::Sessions => commands::cmd_sessions(&rt, opts),
-        Command::Inspect { id } => commands::cmd_inspect(&rt, opts, id),
-        Command::Wait { id, timeout } => commands::cmd_wait(&rt, id, *timeout),
-        Command::Resume {
-            id,
-            goal,
-            max_turns,
-        } => commands::cmd_resume(&rt, opts, id, goal, *max_turns),
-        Command::Cancel { id } => commands::cmd_cancel(&rt, id),
-        Command::FakeAppServer => unreachable!("handled above"),
+        Command::Watch {
+            window_substr,
+            interval_ms,
+            notify,
+            duration_secs,
+            dump_frames,
+        } => {
+            let opts = watch::WatchOpts {
+                window_substr: window_substr.clone(),
+                interval: std::time::Duration::from_millis(*interval_ms),
+                notify: *notify,
+                duration: (*duration_secs > 0)
+                    .then(|| std::time::Duration::from_secs(*duration_secs)),
+                dump_dir: dump_frames.clone(),
+            };
+            return match watch::cmd_watch(opts) {
+                Ok(()) => std::process::ExitCode::SUCCESS,
+                Err(e) => fail(e),
+            };
+        }
+        Command::Tasks { limit } => watch::cmd_tasks(opts, *limit),
+        _ => {
+            let rt = match Runtime::discover(cli.zcode_bin.as_deref()) {
+                Ok(rt) => rt,
+                Err(e) => return fail(e),
+            };
+            match &cli.command {
+                Command::Status => commands::cmd_status(&rt, opts),
+                Command::Run {
+                    cwd,
+                    goal,
+                    max_turns,
+                } => commands::cmd_run(&rt, opts, cwd, goal, *max_turns),
+                Command::Sessions => commands::cmd_sessions(&rt, opts),
+                Command::Inspect { id } => commands::cmd_inspect(&rt, opts, id),
+                Command::Wait { id, timeout } => commands::cmd_wait(&rt, id, *timeout),
+                Command::Resume {
+                    id,
+                    goal,
+                    max_turns,
+                } => commands::cmd_resume(&rt, opts, id, goal, *max_turns),
+                Command::Cancel { id } => commands::cmd_cancel(&rt, id),
+                Command::Watch { .. } | Command::Tasks { .. } | Command::FakeAppServer => {
+                    unreachable!("handled above")
+                }
+            }
+        }
     };
 
     match result {

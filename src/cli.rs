@@ -81,6 +81,37 @@ pub enum Command {
     /// Stop an active session via the app-server.
     Cancel { id: String },
 
+    /// Watch the ZCode GUI window and report task-state transitions
+    /// (running / awaiting_approval / done) as JSON lines on stdout.
+    Watch {
+        /// Case-insensitive substring matched against window title/app name.
+        #[arg(long, default_value = "ZCode")]
+        window_substr: String,
+
+        /// Poll interval in milliseconds.
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+
+        /// Push a telegram alert (via hermes) on state transitions.
+        #[arg(long, default_value = "none")]
+        notify: crate::watch::NotifyMode,
+
+        /// Stop after S seconds (0 = run until interrupted).
+        #[arg(long, default_value_t = 0)]
+        duration_secs: u64,
+
+        /// Save PNG + OCR text of changed frames to DIR (evidence; max 10/run).
+        #[arg(long)]
+        dump_frames: Option<std::path::PathBuf>,
+    },
+
+    /// List tasks from the zcode GUI task index (read-only sqlite3 -readonly).
+    Tasks {
+        /// Maximum rows to show (default 20).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+
     /// NOT A USER COMMAND: canned app-server used by unit tests. Named
     /// `app-server` so the real client's fixed argv (`<exe> app-server`)
     /// reaches it.
