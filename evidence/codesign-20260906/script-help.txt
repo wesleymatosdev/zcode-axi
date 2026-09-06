@@ -1,0 +1,21 @@
+usage: packaging-watcher/sign-with-identity.sh [--dry-run] [--install] [--app PATH] [IDENTITY]
+
+Build ZCodeWatcher.app from target/release/zcode-axi and code-sign it.
+
+  IDENTITY    keychain identity (certificate common name) to sign with.
+              Omitted -> ad-hoc signature (codesign -s -), the historical
+              default. Ad-hoc signatures are re-keyed by cdhash on every
+              build, which orphans the Screen Recording TCC grant; pass a
+              stable identity to keep the grant across rebuilds.
+  --dry-run   print the exact plan (build, bundle assembly, codesign,
+              verification, any TCC re-consent procedure) without building
+              or signing anything.
+  --install   after signing, replace ~/Applications/ZCodeWatcher.app with
+              the freshly signed bundle. Run this with Wesley present: an
+              identity change invalidates the current TCC grant.
+  --app PATH  installed bundle to compare the signing identity against
+              (default: ~/Applications/ZCodeWatcher.app).
+
+Exit codes: 0 ok, 2 usage error, nonzero if any step fails.
+This script never mutates a keychain; identity creation is a documented
+manual one-time step (see the bottom of this file and the README).

@@ -67,3 +67,13 @@ Read-only guarantees: `watch`/`tasks` only read `~/.zcode` (via
 `sqlite3 -readonly` subprocess and the task index; no in-process sqlite for
 the task store) and write only stdout JSON — plus hermes telegram pushes
 when, and only when, `--notify telegram` is set.
+
+## Packaging ZCodeWatcher.app
+
+`watch` runs inside the packaged bundle (`dev.wesleymatos.zcode-watcher`,
+installed at `~/Applications/ZCodeWatcher.app`) so macOS grants Screen
+Recording to the bundle. See
+[packaging-watcher/README.md](packaging-watcher/README.md): why ad-hoc
+signing re-breaks the TCC grant on every rebuild (cdhash rebinding) and how
+the stable-identity build/sign/re-grant flow fixes it
+(`packaging-watcher/sign-with-identity.sh`).

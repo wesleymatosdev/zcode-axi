@@ -1027,3 +1027,273 @@ fn tasks_latest_reads_via_sqlite3_subprocess() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------- packaging: ZCodeWatcher
+//
+// The packaging script must be verifiable WITHOUT a keychain: every test
+// here either inspects files or runs `sign-with-identity.sh --dry-run`,
+// which only prints the plan and reads the signature of an --app path.
+// The only codesign invocation in this suite is `--sign -` (ad-hoc) on a
+// throwaway fixture bundle in a temp dir — ad-hoc signing involves no
+// identity and never touches any keychain, and the installed bundle at
+// ~/Applications is never rebuilt, re-signed, or installed over.
+
+fn sign_script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging-watcher/sign-with-identity.sh")
+}
+
+fn run_sign_script(args: &[&str]) -> std::process::Output {
+    Command::new("bash")
+        .arg(sign_script_path())
+        .args(args)
+        .output()
+        .expect("run sign-with-identity.sh")
+}
+
+fn stdout_of(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn adhoc_signed_fixture_app(name: &str) -> PathBuf {
+    let dir = tempdir(name);
+    let app = dir.join("ZCodeWatcher.app");
+    std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging-watcher/Info.plist"),
+        app.join("Contents/Info.plist"),
+    )
+    .unwrap();
+    std::fs::write(app.join("Contents/MacOS/zcode-axi"), "#!/bin/sh\nexit 0\n").unwrap();
+    let out = Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(&app)
+        .output()
+        .expect("run codesign on fixture");
+    assert!(
+        out.status.success(),
+        "fixture ad-hoc signing failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    app
+}
+
+#[test]
+fn packaging_info_plist_matches_bundle_contract() {
+    let plist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging-watcher/Info.plist");
+
+    let lint = Command::new("plutil")
+        .args(["-lint", &plist.to_string_lossy()])
+        .output()
+        .expect("run plutil -lint");
+    assert!(
+        lint.status.success(),
+        "Info.plist must be valid: {}",
+        String::from_utf8_lossy(&lint.stderr)
+    );
+
+    let json = Command::new("plutil")
+        .args(["-convert", "json", "-o", "-", &plist.to_string_lossy()])
+        .output()
+        .expect("run plutil -convert json");
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).expect("plist json");
+
+    assert_eq!(v["CFBundleIdentifier"], "dev.wesleymatos.zcode-watcher");
+    assert_eq!(v["CFBundleExecutable"], "zcode-axi");
+    assert_eq!(v["CFBundleName"], "ZCode Watcher");
+    assert_eq!(v["CFBundlePackageType"], "APPL");
+    assert_eq!(v["LSUIElement"], true, "menu-bar-less bundle");
+
+    let usage = v["NSScreenCaptureUsageDescription"].as_str().unwrap_or("");
+    assert!(
+        usage.contains("Screen Recording") && usage.len() > 40,
+        "consent-dialog description must explain the capture purpose"
+    );
+}
+
+#[test]
+fn packaging_sign_script_usage_and_exit_codes() {
+    assert!(
+        sign_script_path().metadata().unwrap().permissions().mode() & 0o111 != 0,
+        "script must be executable"
+    );
+
+    let help = run_sign_script(&["--help"]);
+    assert!(help.status.success());
+    let help_out = stdout_of(&help);
+    assert!(help_out.contains("usage:"));
+    assert!(help_out.contains("IDENTITY"));
+    assert!(help_out.contains("never mutates a keychain"));
+
+    let bad_flag = run_sign_script(&["--bogus"]);
+    assert_eq!(bad_flag.status.code(), Some(2), "unknown option exits 2");
+
+    let two_identities = run_sign_script(&["--dry-run", "a", "b"]);
+    assert_eq!(two_identities.status.code(), Some(2), "one identity max");
+
+    let reserved = run_sign_script(&["--dry-run", "-"]);
+    assert_eq!(
+        reserved.status.code(),
+        Some(2),
+        "passing \"-\" is rejected; ad-hoc is the no-arg default"
+    );
+}
+
+#[test]
+fn packaging_sign_script_dry_run_defaults_to_adhoc() {
+    // nonexistent --app keeps the test hermetic: "unreadable" != "adhoc",
+    // so the script must conservatively print the re-consent procedure.
+    let app = tempdir("sign-dry-adhoc").join("missing.app");
+    let app = app.to_string_lossy().into_owned();
+
+    let out = run_sign_script(&["--dry-run", "--app", &app]);
+    assert!(out.status.success());
+    let stdout = stdout_of(&out);
+
+    assert!(
+        stdout.contains("codesign --force --sign - "),
+        "default is ad-hoc (-s -)"
+    );
+    assert!(
+        stdout.contains("codesign --verify --deep --strict"),
+        "verify step planned"
+    );
+    assert!(stdout.contains("installed sig : unreadable"));
+    assert!(
+        stdout.contains("tccutil reset ScreenCapture dev.wesleymatos.zcode-watcher"),
+        "unreadable installed signature must trigger the re-consent procedure"
+    );
+    assert!(
+        !stdout.contains("--install\n") && stdout.contains("staged (not installed)"),
+        "dry-run never installs"
+    );
+    std::fs::remove_dir_all(std::path::Path::new(&app).parent().unwrap()).ok();
+}
+
+#[test]
+fn packaging_sign_script_identity_change_prints_regrant_procedure() {
+    let fixture = adhoc_signed_fixture_app("sign-dry-identity-change");
+    let app = fixture.to_string_lossy().into_owned();
+
+    let out = run_sign_script(&["--dry-run", "zcode-watcher-codesign", "--app", &app]);
+    assert!(out.status.success());
+    let stdout = stdout_of(&out);
+
+    assert!(
+        stdout.contains("codesign --force --sign zcode-watcher-codesign"),
+        "identity is passed through to codesign"
+    );
+    assert!(stdout.contains("installed sig : adhoc"));
+    assert!(stdout.contains("requested sig : zcode-watcher-codesign"));
+    assert!(stdout.contains("CHANGED"));
+    assert!(
+        stdout.contains("tccutil reset ScreenCapture dev.wesleymatos.zcode-watcher"),
+        "identity change must print the tccutil reset + fresh-consent procedure"
+    );
+    assert!(
+        stdout.contains("CGRequestScreenCaptureAccess"),
+        "procedure must point at the app's own consent request"
+    );
+    std::fs::remove_dir_all(fixture.parent().unwrap()).ok();
+}
+
+#[test]
+fn packaging_sign_script_same_identity_suppresses_regrant() {
+    let fixture = adhoc_signed_fixture_app("sign-dry-identity-same");
+    let app = fixture.to_string_lossy().into_owned();
+
+    // installed ad-hoc + ad-hoc request: no identity change, no procedure.
+    let out = run_sign_script(&["--dry-run", "--app", &app]);
+    assert!(out.status.success());
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("unchanged"));
+    assert!(
+        !stdout.contains("tccutil"),
+        "no re-consent noise when the identity did not change"
+    );
+
+    // partial-name containment must NOT match a different identity
+    let out = run_sign_script(&["--dry-run", "adhoc-ish", "--app", &app]);
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("CHANGED"),
+        "identity 'adhoc-ish' is not the installed ad-hoc signature"
+    );
+    std::fs::remove_dir_all(fixture.parent().unwrap()).ok();
+}
+
+#[test]
+fn packaging_sign_script_never_touches_keychain_or_tcc() {
+    let script = std::fs::read_to_string(sign_script_path()).unwrap();
+
+    let mut in_one_time_block = false;
+    let mut heredoc_delim: Option<String> = None;
+    for line in script.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.contains("ONE-TIME IDENTITY SETUP") {
+            in_one_time_block = true;
+        }
+
+        // heredoc bodies (usage text, the printed TCC procedure) are prose,
+        // not commands — track any `<<DELIM` and skip until DELIM alone.
+        if let Some(delim) = &heredoc_delim {
+            if trimmed == delim.as_str() {
+                heredoc_delim = None;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some(idx) = line.find("<<") {
+            let delim = line[idx + 2..]
+                .trim()
+                .trim_matches('\'')
+                .trim_matches('"')
+                .trim();
+            if !delim.is_empty() && delim.chars().all(|c| c.is_ascii_alphanumeric()) {
+                heredoc_delim = Some(delim.to_string());
+                continue;
+            }
+        }
+
+        let lower = line.to_lowercase();
+        for verb in [
+            "security import",
+            "security create",
+            "security add-",
+            "security delete",
+            "security unlock",
+            "security set-key",
+        ] {
+            assert!(
+                !lower.contains(verb),
+                "keychain-mutating command outside comments: {line}"
+            );
+        }
+        assert!(
+            !lower.contains("tccutil"),
+            "tccutil must only ever be PRINTED, not executed: {line}"
+        );
+
+        if lower.contains("codesign") {
+            let allowed = lower.contains("codesign -dv")
+                || lower.contains("codesign --force --sign")
+                || lower.contains("codesign --verify");
+            assert!(
+                allowed,
+                "only read-only (-dv), signing (--force --sign), and verify codesign calls allowed: {line}"
+            );
+        }
+    }
+
+    assert!(
+        in_one_time_block,
+        "commented ONE-TIME IDENTITY SETUP block missing"
+    );
+    assert!(
+        script.contains("security import") && script.contains("security find-identity"),
+        "one-time block must document the import/verification commands"
+    );
+}

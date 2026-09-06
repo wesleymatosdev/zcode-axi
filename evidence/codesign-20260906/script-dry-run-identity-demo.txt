@@ -1,0 +1,40 @@
+bundle        : ZCodeWatcher.app (dev.wesleymatos.zcode-watcher)
+installed sig : adhoc
+requested sig : zcode-watcher-codesign
+identity      : CHANGED — one-time TCC re-consent will be required (printed below)
+[dry-run] (cd /Users/wesleymatos/projects/personal/zcode-axi && cargo build --release)
+[dry-run] mkdir -p /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS
+[dry-run] cp /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/Info.plist /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/Info.plist
+[dry-run] cp /Users/wesleymatos/projects/personal/zcode-axi/target/release/zcode-axi /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS/zcode-axi
+[dry-run] chmod 755 /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS/zcode-axi
+[dry-run] codesign --force --sign zcode-watcher-codesign /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
+[dry-run] codesign --verify --deep --strict /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
+[dry-run] codesign -dv --verbose=2 "/Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app" (output printed here in a real run)
+staged (not installed): /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
+
+=========================================================================
+ TCC RE-CONSENT REQUIRED (signing identity changed vs installed bundle)
+   installed : adhoc
+   requested : zcode-watcher-codesign
+
+ The Screen Recording grant for dev.wesleymatos.zcode-watcher is keyed to the OLD
+ signature. After installing the new signature, re-consent exactly once:
+
+   1) tccutil reset ScreenCapture dev.wesleymatos.zcode-watcher
+
+   2) install the signed bundle (re-run this script with --install),
+      with Wesley present — do not install silently over a live grant.
+
+   3) launch through LaunchServices so the BUNDLE (not the terminal)
+      asks for consent — the app itself calls CGRequestScreenCaptureAccess
+      (ensure_capture_permission) and macOS shows the dialog:
+        open -a ~/Applications/ZCodeWatcher.app --args watch \
+          --duration-secs 5 --interval-ms 1000 --notify none
+
+   4) allow ZCodeWatcher (never Terminal) in
+      System Settings > Privacy & Security > Screen (and System Audio) Recording,
+      then rerun the 60s live gate (evidence/monitor-20260906/LIVE-GATE.md).
+
+ After this ONE re-consent, rebuilds signed with the SAME identity keep
+ the grant; only an identity change re-triggers this procedure.
+=========================================================================

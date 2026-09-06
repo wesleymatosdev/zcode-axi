@@ -1,0 +1,68 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/zcode_axi-ff674b688b6609fc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/zcode_axi-5b1de40e1f1db869)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/units.rs (target/debug/deps/units-01532d605918beac)
+
+running 44 tests
+test checked_in_ocr_evidence_classifies_as_approval ... ok
+test classifier_matches_across_line_breaks_and_case ... ok
+test classifier_fixture_samples_per_state ... ok
+test classifier_precedence_dialog_beats_status_line ... ok
+test error_to_exit_code_mapping ... ok
+test classifier_tasks_cross_check ... ok
+test fmt_ms_renders_utc_civil ... ok
+test local_moment_offset_is_minus_three_hours ... ok
+test headless_contract_parses ... ok
+test client_spawn_failure_is_runtime_error ... ok
+test oneline_flattens_newlines ... ok
+test output_opts_from_flags ... ok
+test rate_limiter_one_alert_per_state_per_window ... ok
+test request_frame_encoding_matches_runtime_contract ... ok
+test run_doc_renders_json_compact_pretty ... ok
+test framediff_hash_is_stable_and_discriminating ... ok
+test run_failure_classification_auth_vs_runtime ... ok
+test framediff_uniform_and_change_detection ... ok
+test packaging_sign_script_never_touches_keychain_or_tcc ... ok
+test session_id_validation ... ok
+test store_missing_file_is_runtime_error ... ok
+test framediff_downscale_keeps_small_frames_intact ... ok
+test send_telegram_missing_hermes_is_skipped_not_attempted ... ok
+test tasks_parse_rows_from_sqlite3_json ... ok
+test telegram_message_format ... ok
+test truncation_and_hints ... ok
+test watch_event_json_shape_is_deterministic ... ok
+test window_advice_positions ... ok
+test window_selection_rejects_menubar_and_prefers_main_window ... ok
+test packaging_info_plist_matches_bundle_contract ... ok
+test store_reads_sessions_and_messages_read_only ... ok
+test tasks_latest_reads_via_sqlite3_subprocess ... ok
+test packaging_sign_script_dry_run_defaults_to_adhoc ... ok
+test packaging_sign_script_identity_change_prints_regrant_procedure ... ok
+test packaging_sign_script_usage_and_exit_codes ... ok
+test packaging_sign_script_same_identity_suppresses_regrant ... ok
+test framediff_realistic_full_frame_is_safe_and_invalid_input_is_an_error ... ok
+test missing_required_args_exit_2 ... ok
+test json_and_pretty_conflict_is_rejected_by_clap ... ok
+test client_round_trip_against_fake_stdio_server ... ok
+test runtime_auth_failure_maps_to_not_authenticated ... ok
+test runtime_headless_success_and_max_turns_probe ... ok
+test send_telegram_mock_failure_reports_exit_and_stderr ... ok
+test send_telegram_mock_success_invokes_hermes_with_exact_argv ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.30s
+
+   Doc-tests zcode_axi
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

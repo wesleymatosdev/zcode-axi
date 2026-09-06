@@ -1,0 +1,2 @@
+    Checking zcode-axi v0.1.0 (/Users/wesleymatos/projects/personal/zcode-axi)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
