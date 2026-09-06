@@ -10,6 +10,7 @@ pub mod exit {
     pub const NOT_AUTHENTICATED: u8 = 3;
     pub const TIMEOUT: u8 = 4;
     pub const UNSUPPORTED_BY_RUNTIME: u8 = 5;
+    pub const SCREEN_PERMISSION_DENIED: u8 = 6;
 }
 
 #[derive(Debug)]
@@ -24,6 +25,9 @@ pub enum AxiError {
     UnsupportedByRuntime(String),
     /// Persisted session storage is unusable or missing the requested row.
     Store(String),
+    /// Screen capture is blocked by macOS Screen Recording permission.
+    /// Fails once with guidance; zcode-axi never retry-spams TCC.
+    ScreenPermissionDenied(String),
 }
 
 impl fmt::Display for AxiError {
@@ -36,6 +40,9 @@ impl fmt::Display for AxiError {
                 write!(f, "unsupported by runtime: {m}")
             }
             AxiError::Store(m) => write!(f, "session store error: {m}"),
+            AxiError::ScreenPermissionDenied(m) => {
+                write!(f, "screen recording permission denied: {m}")
+            }
         }
     }
 }
@@ -50,6 +57,7 @@ impl AxiError {
             AxiError::Timeout(_) => exit::TIMEOUT,
             AxiError::UnsupportedByRuntime(_) => exit::UNSUPPORTED_BY_RUNTIME,
             AxiError::Store(_) => exit::RUNTIME_ERROR,
+            AxiError::ScreenPermissionDenied(_) => exit::SCREEN_PERMISSION_DENIED,
         }
     }
 }
