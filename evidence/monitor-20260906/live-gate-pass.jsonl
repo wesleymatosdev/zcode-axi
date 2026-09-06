@@ -1,0 +1,8 @@
+{"ts":"2026-09-06 14:28:14Z","ts_ms":1788704894480,"event":"watch_start","reason":"window=1200x800 interval_ms=1000 notify=none"}
+{"ts":"2026-09-06 14:28:15Z","ts_ms":1788704895017,"event":"processing","reason":"capture_ms=9 signature_ms=0 ocr_chars=2088","iterations":0,"stage":"frame","outcome":"unknown","elapsed_ms":526}
+{"ts":"2026-09-06 14:28:24Z","ts_ms":1788704904500,"event":"heartbeat","state":"unknown","iterations":10}
+{"ts":"2026-09-06 14:28:34Z","ts_ms":1788704914513,"event":"heartbeat","state":"unknown","iterations":20}
+{"ts":"2026-09-06 14:28:44Z","ts_ms":1788704924534,"event":"heartbeat","state":"unknown","iterations":30}
+{"ts":"2026-09-06 14:28:54Z","ts_ms":1788704934538,"event":"heartbeat","state":"unknown","iterations":40}
+{"ts":"2026-09-06 14:29:04Z","ts_ms":1788704944546,"event":"heartbeat","state":"unknown","iterations":50}
+{"ts":"2026-09-06 14:29:14Z","ts_ms":1788704954541,"event":"watch_end","reason":"duration","iterations":60,"states_seen":[]}

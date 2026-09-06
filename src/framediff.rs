@@ -39,9 +39,23 @@ impl ChangeInfo {
 
 /// Compute the grayscale block-average signature of an RGBA frame.
 /// Block grid is SIG_W×SIG_H stretched over the whole frame.
-pub fn signature(rgba: &[u8], width: usize, height: usize) -> FrameSig {
+pub fn signature(rgba: &[u8], width: usize, height: usize) -> Result<FrameSig, String> {
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| format!("frame dimensions overflow: {width}x{height} RGBA8"))?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "frame dimensions must be non-zero: {width}x{height}"
+        ));
+    }
+    if rgba.len() != expected {
+        return Err(format!(
+            "frame buffer length mismatch: {} bytes for {width}x{height} RGBA8 (expected {expected})",
+            rgba.len()
+        ));
+    }
     let mut blocks = vec![0u8; SIG_W * SIG_H];
-    assert_eq!(rgba.len(), width * height * 4, "frame must be RGBA8");
     for by in 0..SIG_H {
         let y0 = by * height / SIG_H;
         let y1 = ((by + 1) * height / SIG_H).max(y0 + 1);
@@ -68,7 +82,7 @@ pub fn signature(rgba: &[u8], width: usize, height: usize) -> FrameSig {
             };
         }
     }
-    FrameSig { blocks }
+    Ok(FrameSig { blocks })
 }
 
 /// True when every block has the same value — on macOS this is the shape of

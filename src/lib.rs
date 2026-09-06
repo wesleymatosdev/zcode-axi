@@ -9,6 +9,7 @@ pub mod framediff;
 pub mod notify;
 pub mod ocr;
 pub mod output;
+pub mod poc;
 pub mod proto;
 pub mod runtime;
 pub mod store;

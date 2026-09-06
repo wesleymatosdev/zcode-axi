@@ -81,6 +81,15 @@ pub enum Command {
     /// Stop an active session via the app-server.
     Cancel { id: String },
 
+    /// One-shot selected-window capture → OCR → marker search.
+    /// Writes its report to --out (no stdout under LaunchServices).
+    #[command(name = "poc")]
+    Poc {
+        /// Output file for the PoC report.
+        #[arg(long, default_value = "/tmp/screenpipe-poc-output.txt")]
+        out: String,
+    },
+
     /// Watch the ZCode GUI window and report task-state transitions
     /// (running / awaiting_approval / done) as JSON lines on stdout.
     Watch {

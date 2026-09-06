@@ -41,6 +41,8 @@ orchestrator:
 4. classify the text: `awaiting_approval` (permission dialog) > `running`
    (status line) > `done` (transcript), cross-checked against
    `~/.zcode/v2/tasks-index.sqlite` (read-only subprocess, refreshed ≤1×/10s)
+   only to corroborate OCR completion; the task index cannot prove success
+   on its own
 5. emit one JSON line per event on stdout; on state **transitions** (not
    every poll) optionally push a telegram alert via hermes
 
@@ -49,8 +51,10 @@ target/release/zcode-axi watch [--window-substr ZCode] [--interval-ms 1000] \
     [--notify none|telegram] [--duration-secs S] [--dump-frames DIR]
 ```
 
-- Events: `watch_start`, `state` (with `from`/`state`/`confidence`/
-  `task_title`/`frame_hash`/`notified`), `heartbeat` (~10 s), `watch_end`.
+- Events: `watch_start`, `processing` (stage/timing plus explicit classified,
+  unchanged, unknown, or error outcome), `state` (with `from`/`state`/
+  `confidence`/`task_title`/`frame_hash`/`notified`), `heartbeat` (~10 s),
+  `watch_end`.
 - Rate limit: max 1 telegram alert per state per 5 minutes; suppression is
   reported in the event (`notified:false`, `notify_detail`).
 - macOS Screen Recording permission: if denied (capture fails or frames are

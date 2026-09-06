@@ -2796,6 +2796,7 @@ name = "zcode-axi"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "image",
  "ocrs",
  "png",
  "rten",

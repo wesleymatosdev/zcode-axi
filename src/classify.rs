@@ -75,11 +75,25 @@ pub fn classify(text: &str) -> Option<State> {
     None
 }
 
-/// Cross-check a `done` classification (or settle an unknown) against the
+/// Cross-check a `done` classification against the
 /// task index: the most recent task having `task_status = "completed"`
 /// supports Done. Any other status (or None) does not.
 pub fn tasks_support_done(latest: Option<&crate::tasks::TaskRow>) -> bool {
     latest.is_some_and(|t| t.task_status == "completed")
+}
+
+/// Combine window OCR with the task index without allowing index-only proof.
+pub fn classify_with_tasks(
+    text: &str,
+    latest: Option<&crate::tasks::TaskRow>,
+) -> (Option<State>, Confidence) {
+    let state = classify(text);
+    let confidence = if state == Some(State::Done) && tasks_support_done(latest) {
+        Confidence::OcrAndTasks
+    } else {
+        Confidence::Ocr
+    };
+    (state, confidence)
 }
 
 /// Which evidence produced a classification (reported in JSON events).
@@ -89,8 +103,6 @@ pub enum Confidence {
     Ocr,
     /// OCR marker matched AND the task index agrees.
     OcrAndTasks,
-    /// No OCR marker; settled purely by the task index.
-    TasksOnly,
 }
 
 impl Confidence {
@@ -98,7 +110,6 @@ impl Confidence {
         match self {
             Confidence::Ocr => "ocr",
             Confidence::OcrAndTasks => "ocr+tasks",
-            Confidence::TasksOnly => "tasks",
         }
     }
 }

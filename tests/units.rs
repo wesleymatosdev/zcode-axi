@@ -520,6 +520,13 @@ fn classifier_fixture_samples_per_state() {
 }
 
 #[test]
+fn checked_in_ocr_evidence_classifies_as_approval() {
+    use zcode_axi::classify::{classify, State};
+    let text = include_str!("../evidence/fixture-permission-frame.ocr.txt");
+    assert_eq!(classify(text), Some(State::AwaitingApproval));
+}
+
+#[test]
 fn classifier_matches_across_line_breaks_and_case() {
     // OCR frequently breaks a phrase across lines; whitespace-normalization
     // must still match.
@@ -555,7 +562,7 @@ fn classifier_precedence_dialog_beats_status_line() {
 
 #[test]
 fn classifier_tasks_cross_check() {
-    use zcode_axi::classify::{tasks_support_done, Confidence};
+    use zcode_axi::classify::{classify_with_tasks, tasks_support_done, Confidence, State};
     use zcode_axi::tasks::TaskRow;
 
     let completed = TaskRow {
@@ -576,7 +583,64 @@ fn classifier_tasks_cross_check() {
 
     assert_eq!(Confidence::Ocr.as_str(), "ocr");
     assert_eq!(Confidence::OcrAndTasks.as_str(), "ocr+tasks");
-    assert_eq!(Confidence::TasksOnly.as_str(), "tasks");
+    assert_eq!(classify_with_tasks("", Some(&completed)).0, None);
+    assert_eq!(
+        classify_with_tasks("Task completed", Some(&completed)),
+        (Some(State::Done), Confidence::OcrAndTasks)
+    );
+}
+
+#[test]
+fn window_selection_rejects_menubar_and_prefers_main_window() {
+    use zcode_axi::watch::{select_window_candidate, WindowCandidate};
+
+    let candidates = vec![
+        WindowCandidate {
+            index: 0,
+            app: "Window Server".into(),
+            title: "ZCode Menubar".into(),
+            width: 2560,
+            height: 30,
+        },
+        WindowCandidate {
+            index: 1,
+            app: "ZCode".into(),
+            title: "Settings".into(),
+            width: 640,
+            height: 480,
+        },
+        WindowCandidate {
+            index: 2,
+            app: "ZCode".into(),
+            title: "ZCode".into(),
+            width: 2560,
+            height: 1440,
+        },
+        WindowCandidate {
+            index: 3,
+            app: "Google Chrome".into(),
+            title: "ZCode".into(),
+            width: 3840,
+            height: 2160,
+        },
+        WindowCandidate {
+            index: 4,
+            app: "Code".into(),
+            title: "ZCode — Visual Studio Code".into(),
+            width: 3440,
+            height: 1440,
+        },
+        WindowCandidate {
+            index: 5,
+            app: "ZCodeWatcher".into(),
+            title: "ZCode monitor".into(),
+            width: 3200,
+            height: 1800,
+        },
+    ];
+    assert_eq!(select_window_candidate(&candidates, "ZCode"), Some(2));
+    assert_eq!(select_window_candidate(&candidates[..1], "ZCode"), None);
+    assert_eq!(select_window_candidate(&candidates[3..], "ZCode"), None);
 }
 
 // -------------------------------------------------------- rate limiting
@@ -656,6 +720,9 @@ fn watch_event_json_shape_is_deterministic() {
         reason: None,
         iterations: None,
         states_seen: None,
+        stage: None,
+        outcome: None,
+        elapsed_ms: None,
     };
     assert_eq!(
         serde_json::to_string(&minimal).unwrap(),
@@ -691,7 +758,7 @@ fn framediff_uniform_and_change_detection() {
 
     let (w, h) = (64usize, 36usize);
     let frame = vec![90u8; w * h * 4]; // uniform gray
-    let sig_a = signature(&frame, w, h);
+    let sig_a = signature(&frame, w, h).unwrap();
     assert!(is_uniform(&sig_a), "solid frame must be uniform");
 
     // repaint ~10% of blocks well past BLOCK_DELTA
@@ -704,7 +771,7 @@ fn framediff_uniform_and_change_detection() {
             frame_b[i + 2] = 90 + BLOCK_DELTA * 4;
         }
     }
-    let sig_b = signature(&frame_b, w, h);
+    let sig_b = signature(&frame_b, w, h).unwrap();
     assert!(!is_uniform(&sig_b));
     let change = diff(&sig_a, &sig_b);
     assert!(change.changed, "a big repaint must register as changed");
@@ -714,7 +781,7 @@ fn framediff_uniform_and_change_detection() {
     let mut frame_c = frame.clone();
     let i = 0;
     frame_c[i] = 250;
-    let sig_c = signature(&frame_c, w, h);
+    let sig_c = signature(&frame_c, w, h).unwrap();
     assert!(
         !diff(&sig_a, &sig_c).changed,
         "tiny deltas stay below threshold"
@@ -731,9 +798,9 @@ fn framediff_hash_is_stable_and_discriminating() {
     let (w, h) = (32usize, 18usize);
     let gray = vec![120u8; w * h * 4];
     let black = vec![0u8; w * h * 4];
-    let h1 = hash(&signature(&gray, w, h));
-    let h2 = hash(&signature(&gray, w, h));
-    let h3 = hash(&signature(&black, w, h));
+    let h1 = hash(&signature(&gray, w, h).unwrap());
+    let h2 = hash(&signature(&gray, w, h).unwrap());
+    let h3 = hash(&signature(&black, w, h).unwrap());
     assert_eq!(h1, h2, "same pixels → same hash");
     assert_ne!(h1, h3, "different pixels → different hash");
 }
@@ -752,6 +819,20 @@ fn framediff_downscale_keeps_small_frames_intact() {
     assert_eq!(w, 2000);
     assert_eq!(h, 50); // aspect preserved
     assert_eq!(out.len(), w * h * 4);
+}
+
+#[test]
+fn framediff_realistic_full_frame_is_safe_and_invalid_input_is_an_error() {
+    use zcode_axi::framediff::{downscale_rgba, signature};
+
+    let (w, h) = (2560usize, 1440usize);
+    let frame = vec![127u8; w * h * 4];
+    assert!(signature(&frame, w, h).is_ok());
+    let (small, sw, sh) = downscale_rgba(&frame, w, h, 2000);
+    assert_eq!((sw, sh), (2000, 1125));
+    assert_eq!(small.len(), sw * sh * 4);
+    assert!(signature(&frame[..frame.len() - 1], w, h).is_err());
+    assert!(signature(&[], usize::MAX, 2).is_err());
 }
 
 // ------------------------------------------------------------------- tasks

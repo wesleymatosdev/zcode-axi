@@ -1,0 +1,76 @@
+OPD
+Pending-work reconciliation -v2 refresh
+Base inventor: pending-reconciliation-
+20260905.json / md (generated 2026-09-05 16:30
+-03:00) Refreshed: 2026-09-0520:55-03:00 (all live
+checks run 20:40-20:55-03:00) Method: read-only
+only 91 status/log/branch/rev-parse/merge-base
+in the named repos, 9it s-remote for live remote
+head state (no fetch), gh api GET. dig Ls /file
+reads at the exact paths named in the inventory and its
+citations. No checkout, no reset, no repo modifications.
+no pushes, no serverlcontainer actions. The only file
+written bv this pass is the one you are reading.
+What changed since 16:30
+O013
+? New task
+O Search
+F? Automations
+AS Plugin Marketplace
+Group C Project
+Proiects
+No open projects
+Tasks
+Refresh pending-reconciliat 13h
+Hermes memorvOS Intermit 14h
+Subscriber quota smoke test 2h
+9h
+g
+New task  default
+wesleymatosdev/u
+PEND-014 - resolvea py ldentiTication. ne Opencode worker
+was the herdr-axi refactor attempt (died on an
+external_directory auto-reject from a path-case typo); its
+WIp is preserved on recovery/opencode-wip-20260905 and the
+goal was delivered by the PEND-009 recoverv.
+Unchanged (8): PEND-002 (bundles still local-only -live Is-remote
+confirms), 004 (usage-dash still 1 ahead, unpushed), 005 (oss DNS
+still emptv: skills still resolves via Cloudflare), 006, 010, 011 (blog
+still unrelated histories, draft untouched), 012 (https_enforced still
+false via live GET). 013
+The report ends with a consolidated queue of what's on you: push
+approvals (usage-dash, hermes bundles, herdr-axi. unfit-rs),
+decisions (integration publish path, unfit fold-vs-shelve, blog
+naming), and the osS CNAME
+pending-reconciliation-20260905-v2.md
+Document MD
+MERnEn A
+? Write pending-reconciliation-20260905-..
+Open
+#E N
+K
+E
+pending-recon
+pending-reconciliation-20260905-v2.md  
+0
+PEND-003 (docker
+PEND-007 (superse
+mainl
+identified supers
+COMPLETED (local, unpushed) PEND-009 herdr-ax
+ahead of origin, plu
+Integration smoke test. Do
+ney
+M
+Undo
+1 file changed +129-0
+Change
+CLOSED
+Items
+confirmed on
+Ask for follow-up changes
+31
+S
+GLM-5.3-Flash
+None TA
+J o

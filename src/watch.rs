@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::json;
 use xcap::Window;
 
-use crate::classify::{classify, tasks_support_done, Confidence, State};
+use crate::classify::{classify_with_tasks, State};
 use crate::error::{AxiError, AxiResult};
 use crate::framediff;
 use crate::notify::{self, RateDecision, RateLimiter};
@@ -85,6 +85,12 @@ pub struct WatchEvent {
     pub iterations: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub states_seen: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 impl WatchEvent {
@@ -111,11 +117,15 @@ fn ev(event: &'static str) -> WatchEvent {
         reason: None,
         iterations: None,
         states_seen: None,
+        stage: None,
+        outcome: None,
+        elapsed_ms: None,
     }
 }
 
-/// Find the ZCode window by case-insensitive substring over title or app
-/// name. Errors list candidate windows so misconfiguration is debuggable.
+/// Find the largest usable window owned by the ZCode application. Titles are
+/// deliberately ignored because unrelated applications can display "ZCode".
+/// Errors list candidate windows so misconfiguration is debuggable.
 ///
 /// macOS Screen Recording denial hides OTHER applications' windows from
 /// enumeration entirely (system surfaces like "Window Server — Menubar" stay
@@ -123,18 +133,107 @@ fn ev(event: &'static str) -> WatchEvent {
 /// enumerable, that denial is the far more likely cause than "the app has no
 /// window" — report it as SCREEN_PERMISSION_DENIED (exit 6) with guidance,
 /// once, and never retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowCandidate {
+    pub index: usize,
+    pub app: String,
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Screen Recording consent (macOS). macOS only shows the consent dialog in
+/// response to an actual capture-access request; an enumeration-only program
+/// never triggers it and would fail forever without ever asking. This is the
+/// same CGRequestScreenCaptureAccess call screenpipe-style apps make first.
+#[cfg(target_os = "macos")]
+mod capture_permission {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
+    /// True when TCC currently grants Screen Recording to this process.
+    pub fn granted() -> bool {
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    /// Trigger the consent dialog and poll until the user clicks Allow or
+    /// `wait` elapses. Returns true only when TCC reports the grant.
+    pub fn request_and_wait(wait: std::time::Duration) -> bool {
+        unsafe {
+            let _ = CGRequestScreenCaptureAccess();
+        }
+        let deadline = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < deadline {
+            if granted() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        granted()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod capture_permission {
+    /// Non-macOS builds have no TCC gate; capture is assumed permitted.
+    pub fn granted() -> bool {
+        true
+    }
+
+    pub fn request_and_wait(_wait: std::time::Duration) -> bool {
+        true
+    }
+}
+
+/// Ensure Screen Recording is granted before window enumeration. When no
+/// grant exists, triggers the macOS consent dialog and waits up to 30s for
+/// the user to click Allow, so a single launch can proceed unattended.
+pub fn ensure_capture_permission() -> AxiResult<()> {
+    if capture_permission::granted() {
+        return Ok(());
+    }
+    if capture_permission::request_and_wait(Duration::from_secs(30)) {
+        return Ok(());
+    }
+    Err(permission_error(
+        "Screen Recording consent dialog was shown but the grant is still \
+         missing; click Allow for ZCodeWatcher (System Settings > Privacy & \
+         Security > Screen & System Audio Recording), then re-run",
+    ))
+}
+
+pub fn select_window_candidate(candidates: &[WindowCandidate], _substr: &str) -> Option<usize> {
+    candidates
+        .iter()
+        .filter(|c| c.app.eq_ignore_ascii_case("ZCode") && c.width >= 320 && c.height >= 200)
+        .max_by_key(|c| u64::from(c.width) * u64::from(c.height))
+        .map(|c| c.index)
+}
+
 pub fn find_window(substr: &str) -> AxiResult<Window> {
-    let needle = substr.to_lowercase();
     let windows =
         Window::all().map_err(|e| AxiError::Runtime(format!("cannot enumerate windows: {e}")))?;
     let mut candidates: Vec<String> = Vec::new();
-    for w in &windows {
+    let mut metadata = Vec::with_capacity(windows.len());
+    for (index, w) in windows.iter().enumerate() {
         let title = w.title().unwrap_or_default();
         let app = w.app_name().unwrap_or_default();
-        candidates.push(format!("{app} — {title}"));
-        if title.to_lowercase().contains(&needle) || app.to_lowercase().contains(&needle) {
-            return Ok(w.clone());
-        }
+        let width = w.width().unwrap_or_default();
+        let height = w.height().unwrap_or_default();
+        candidates.push(format!("{app} — {title} ({width}x{height})"));
+        metadata.push(WindowCandidate {
+            index,
+            app,
+            title,
+            width,
+            height,
+        });
+    }
+    if let Some(index) = select_window_candidate(&metadata, substr) {
+        return Ok(windows[index].clone());
     }
     let only_system_surfaces = windows.iter().all(|w| {
         w.app_name()
@@ -218,6 +317,7 @@ pub struct WatchOpts {
 }
 
 pub fn cmd_watch(opts: WatchOpts) -> AxiResult<()> {
+    ensure_capture_permission()?;
     let window = find_window(&opts.window_substr)?;
     let ocr = Ocr::load()?;
 
@@ -227,7 +327,8 @@ pub fn cmd_watch(opts: WatchOpts) -> AxiResult<()> {
         .capture_image()
         .map_err(|e| permission_error(&format!("capture failed: {e}")))?;
     let (w, h) = first.dimensions();
-    let first_sig = framediff::signature(first.as_raw(), w as usize, h as usize);
+    let first_sig = framediff::signature(first.as_raw(), w as usize, h as usize)
+        .map_err(|e| AxiError::Runtime(format!("frame signature failed: {e}")))?;
     if framediff::is_uniform(&first_sig) {
         return Err(permission_error("capture is a solid-black frame"));
     }
@@ -272,7 +373,11 @@ pub fn cmd_watch(opts: WatchOpts) -> AxiResult<()> {
             .map_err(|e| permission_error(&format!("capture failed: {e}")))?;
         let (fw, fh) = frame.dimensions();
         let rgba = frame.as_raw().clone();
-        let sig = framediff::signature(&rgba, fw as usize, fh as usize);
+        let capture_ms = iter_start.elapsed().as_millis() as u64;
+        let signature_start = Instant::now();
+        let sig = framediff::signature(&rgba, fw as usize, fh as usize)
+            .map_err(|e| AxiError::Runtime(format!("frame signature failed: {e}")))?;
+        let signature_ms = signature_start.elapsed().as_millis() as u64;
 
         if framediff::is_uniform(&sig) {
             uniform_streak += 1;
@@ -291,6 +396,7 @@ pub fn cmd_watch(opts: WatchOpts) -> AxiResult<()> {
             // OCR the (downscaled) changed frame.
             let (buf, ow, oh) =
                 framediff::downscale_rgba(&rgba, fw as usize, fh as usize, OCR_TARGET_WIDTH);
+            let ocr_start = Instant::now();
             match ocr.text(&buf, ow as u32, oh as u32) {
                 Ok(text) => {
                     ocr_errors = 0;
@@ -307,10 +413,31 @@ pub fn cmd_watch(opts: WatchOpts) -> AxiResult<()> {
                             dumps += 1;
                         }
                     }
-                    handle_text(&text, &sig, &change, &mut ctx);
+                    let outcome = handle_text(&text, &sig, &change, &mut ctx);
+                    WatchEvent {
+                        stage: Some("frame"),
+                        outcome: Some(outcome),
+                        reason: Some(format!(
+                            "capture_ms={capture_ms} signature_ms={signature_ms} ocr_chars={}",
+                            text.len()
+                        )),
+                        elapsed_ms: Some(ocr_start.elapsed().as_millis() as u64),
+                        iterations: Some(iterations),
+                        ..ev("processing")
+                    }
+                    .print();
                 }
                 Err(e) => {
                     ocr_errors += 1;
+                    WatchEvent {
+                        stage: Some("ocr"),
+                        outcome: Some("error"),
+                        reason: Some(e.to_string()),
+                        elapsed_ms: Some(ocr_start.elapsed().as_millis() as u64),
+                        iterations: Some(iterations),
+                        ..ev("processing")
+                    }
+                    .print();
                     eprintln!("zcode-axi: ocr error ({ocr_errors}/{OCR_ERROR_LIMIT}): {e}");
                     if ocr_errors >= OCR_ERROR_LIMIT {
                         return Err(AxiError::Runtime(format!(
@@ -362,32 +489,14 @@ fn handle_text(
     sig: &framediff::FrameSig,
     change: &framediff::ChangeInfo,
     ctx: &mut WatchCtx,
-) {
-    let mut confidence = Confidence::Ocr;
-    let mut state = classify(text);
-
-    // Cross-check with the task index: confirm OCR `done`, or settle an
-    // unknown when the most recent task completed (transcript-settled).
-    match state {
-        Some(State::Done) => {
-            if tasks_support_done(ctx.tasks.latest()) {
-                confidence = Confidence::OcrAndTasks;
-            }
-        }
-        None => {
-            if tasks_support_done(ctx.tasks.latest()) {
-                state = Some(State::Done);
-                confidence = Confidence::TasksOnly;
-            }
-        }
-        _ => {}
-    }
+) -> &'static str {
+    let (state, confidence) = classify_with_tasks(text, ctx.tasks.latest());
 
     let Some(new_state) = state else {
-        return; // unknown text: keep previous state, no event
+        return "unknown";
     };
     if ctx.prev_state == Some(new_state) {
-        return; // not a transition
+        return "unchanged";
     }
 
     let from = ctx.prev_state;
@@ -441,6 +550,7 @@ fn handle_text(
         ..ev("state")
     }
     .print();
+    new_state.as_str()
 }
 
 /// `zcode-axi tasks`: render the task index read via `sqlite3 -readonly`.
