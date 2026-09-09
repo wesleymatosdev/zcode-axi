@@ -74,7 +74,7 @@
     { "type": "arrow", "id": "a_gw_ses", "x": 300, "y": 505, "width": 40, "height": 0, "points": [[0, 0], [40, 0]], "endArrowhead": "arrow" },
 
     { "type": "arrow", "id": "a_ses_sw", "x": 580, "y": 520, "width": 100, "height": 0, "points": [[0, 0], [100, 0]], "endArrowhead": "arrow" },
-    { "type": "text", "id": "a_ses_sw_l", "x": 555, "y": 540, "text": "zc-spawn / zc-steer\ntmux control plane", "fontSize": 14, "fontFamily": 1, "strokeColor": "#757575", "originalText": "zc-spawn / zc-steer\ntmux control plane", "autoResize": true },
+    { "type": "text", "id": "a_ses_sw_l", "x": 555, "y": 540, "text": "fleet-spawn / fleet-steer\ntmux control plane", "fontSize": 14, "fontFamily": 1, "strokeColor": "#757575", "originalText": "fleet-spawn / fleet-steer\ntmux control plane", "autoResize": true },
 
     { "type": "arrow", "id": "a_ses_st", "x": 460, "y": 600, "width": 40, "height": 280, "points": [[0, 0], [40, 280]], "endArrowhead": "arrow" },
     { "type": "text", "id": "a_ses_st_l", "x": 480, "y": 720, "text": "write seed brief\nverify artifacts", "fontSize": 14, "fontFamily": 1, "strokeColor": "#757575", "originalText": "write seed brief\nverify artifacts", "autoResize": true },
@@ -86,7 +86,7 @@
     { "type": "text", "id": "a_w_prov_l", "x": 1090, "y": 505, "text": "model calls (tier bands)", "fontSize": 14, "fontFamily": 1, "strokeColor": "#757575", "originalText": "model calls (tier bands)", "autoResize": true },
 
     { "type": "arrow", "id": "a_w_ev", "x": 950, "y": 445, "width": 460, "height": 245, "points": [[0, 0], [-460, -245]], "endArrowhead": "arrow", "strokeStyle": "dashed", "strokeColor": "#e8590c" },
-    { "type": "text", "id": "a_w_ev_l", "x": 560, "y": 300, "text": "zc-event → hermes send\npublish: one HTTPS call, no LLM", "fontSize": 14, "fontFamily": 1, "strokeColor": "#e8590c", "originalText": "zc-event → hermes send\npublish: one HTTPS call, no LLM", "autoResize": true },
+    { "type": "text", "id": "a_w_ev_l", "x": 560, "y": 300, "text": "fleet-event → hermes send\npublish: one HTTPS call, no LLM", "fontSize": 14, "fontFamily": 1, "strokeColor": "#e8590c", "originalText": "fleet-event → hermes send\npublish: one HTTPS call, no LLM", "autoResize": true },
 
     { "type": "arrow", "id": "a_cr_st", "x": 180, "y": 690, "width": 0, "height": 190, "points": [[0, 0], [0, 190]], "endArrowhead": "arrow" },
     { "type": "text", "id": "a_cr_st_l", "x": 196, "y": 770, "text": "digest sweep:\nverify + close + notify", "fontSize": 14, "fontFamily": 1, "strokeColor": "#757575", "originalText": "digest sweep:\nverify + close + notify", "autoResize": true },

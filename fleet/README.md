@@ -11,27 +11,27 @@ is a second ZCode worker on the first one's diff.
 
 | Script | Purpose |
 |---|---|
-| `zc-spawn.sh <task-id> <brief-file> [cwd]` | spawn named window `fleet-<task-id>` in tmux session `zswarm`: bare `zcode --mode yolo`, wait for the Flash footer (readiness), send-keys the brief pointer, verify delivery; tee via `tmux pipe-pane` to `logs/<task-id>.log` |
-| `zc-watch.sh [--timeout SEC] <task-id>` | wait-then-follow watcher; exits on ANY attention state: `done:` `failed:` `blocked:` `needs-decision:` (exit 2 on timeout = stall) |
-| `zc-status.sh [task-id]` | dashboard feed: id, last status line, log size, worker pid alive |
-| `zc-complete.sh <task-id> <done\|failed> <summary>` | coordinator-only terminal write, after artifact verification |
-| `zc-steer.sh <task-id> <one-line>` | coordinator steering: durable `steered:` line + send-keys pointer (≤300 chars; detail belongs in the brief) |
-| `zc-recover.sh` | watchdog: appends `failed: worker died mid-task` to open tasks whose pid/window is gone |
-| `zc-digest.sh` | deterministic digest for the cron monitor: OPEN (escalations + liveness only), CLOSED (fresh 48h). Progress chatter is invisible by design |
+| `fleet-spawn.sh <task-id> <brief-file> [cwd]` | spawn named window `fleet-<task-id>` in tmux session `zswarm`: bare `zcode --mode yolo`, wait for the Flash footer (readiness), send-keys the brief pointer, verify delivery; tee via `tmux pipe-pane` to `logs/<task-id>.log` |
+| `fleet-watch.sh [--timeout SEC] <task-id>` | wait-then-follow watcher; exits on ANY attention state: `done:` `failed:` `blocked:` `needs-decision:` (exit 2 on timeout = stall) |
+| `fleet-status.sh [task-id]` | dashboard feed: id, last status line, log size, worker pid alive |
+| `fleet-complete.sh <task-id> <done\|failed> <summary>` | coordinator-only terminal write, after artifact verification |
+| `fleet-steer.sh <task-id> <one-line>` | coordinator steering: durable `steered:` line + send-keys pointer (≤300 chars; detail belongs in the brief) |
+| `fleet-recover.sh` | watchdog: appends `failed: worker died mid-task` to open tasks whose pid/window is gone |
+| `fleet-digest.sh` | deterministic digest for the cron monitor: OPEN (escalations + liveness only), CLOSED (fresh 48h). Progress chatter is invisible by design |
 
 ## The loop (how the coordinator dispatches)
 
 ```
-bash fleet/zc-spawn.sh  <id> brief.md <cwd>     # foreground: returns ready/delivery evidence
-bash fleet/zc-watch.sh --timeout 2400 <id>      # BACKGROUND job with exit notification —
+bash fleet/fleet-spawn.sh  <id> brief.md <cwd>     # foreground: returns ready/delivery evidence
+bash fleet/fleet-watch.sh --timeout 2400 <id>      # BACKGROUND job with exit notification —
                                                 # any attention state re-enters the
                                                 # coordinator on its own; no polling
 # on wake: verify artifacts (report exists, commits, tests), then:
-bash fleet/zc-complete.sh <id> done "<one-line evidence-backed summary>"
+bash fleet/fleet-complete.sh <id> done "<one-line evidence-backed summary>"
 ```
 
 AFK lane: the `fleet-v2 digest supervisor` cron (every 10m) hashes
-`zc-recover.sh && zc-digest.sh` output; a change wakes it to verify and push
+`fleet-recover.sh && fleet-digest.sh` output; a change wakes it to verify and push
 ONE line per task to Telegram ("✅ id: result · evidence"). Identical digest =
 free tick. The Telegram context contract: one dispatch line in, one
 completion line out; everything else stays on disk.
@@ -41,13 +41,13 @@ completion line out; everything else stays on disk.
 `fleet/state/<task-id>.status` is append-only:
 
 ```
-spawned: <iso-ts> brief=<path> cwd=<cwd> pid=<zcode-pid>     # zc-spawn only
-dispatched: <iso-ts> ready=yes|no mode=send-keys              # zc-spawn only
+spawned: <iso-ts> brief=<path> cwd=<cwd> pid=<zcode-pid>     # fleet-spawn only
+dispatched: <iso-ts> ready=yes|no mode=send-keys              # fleet-spawn only
 working: <what is happening now>                              # worker
 ready-for-review: <one-line: deliverable complete, where>     # worker (watch exits: verify me)
 blocked: <what is blocking, and on whom>                      # worker (escalation)
 needs-decision: <the question, and the options>               # worker (escalation)
-steered: <one-line pointer>                                   # zc-steer only
+steered: <one-line pointer>                                   # fleet-steer only
 done: <one-line evidence-backed summary>                      # coordinator only
 failed: <one-line reason>                                     # coordinator only
 ```
@@ -57,7 +57,7 @@ by later nonterminal lines. `done:`/`failed:` end the watch; `blocked:`/
 `needs-decision:` end it too — they re-enter the coordinator as requests for
 help. `ready-for-review:` is the worker's "deliverable complete" signal (the
 success path): the watch exits, the coordinator verifies the artifact and
-closes with `zc-complete.sh`. Without it a finished worker would be
+closes with `fleet-complete.sh`. Without it a finished worker would be
 indistinguishable from a stall.
 
 ## The evidence gate
@@ -89,7 +89,7 @@ belongs to the coordinator's verdict.
 
 ```
 fleet/
-  zc-*.sh  probe-brief.txt
+  fleet-*.sh  probe-brief.txt
   logs/<task-id>.log     pane capture (pipe-pane), full worker output
   state/<task-id>.status append-only status file (the contract)
 ```

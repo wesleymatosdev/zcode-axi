@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zc-event.sh — worker/completion event publisher (fleet pub-sub, 2026-09-09).
+# fleet-event.sh — worker/completion event publisher (fleet pub-sub, 2026-09-09).
 #
-# Usage: zc-event.sh <task-id> <event> [one-line detail]
+# Usage: fleet-event.sh <task-id> <event> [one-line detail]
 #   event: ready-for-review | blocked | needs-decision | failed | done
 #
 # Subscribes the event to the fleet topic: sends a one-line message to
@@ -23,7 +23,7 @@ case "$event" in
   needs-decision)   icon="❓" ;;
   failed)           icon="❌" ;;
   done)             icon="✅" ;;
-  *) echo "zc-event: unknown event: $event" >&2; exit 1 ;;
+  *) echo "fleet-event: unknown event: $event" >&2; exit 1 ;;
 esac
 
 msg="${icon} fleet/${task_id} ${event}${detail:+ — ${detail}}"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zc-recover.sh — fleet watchdog: fail only provably dead workers.
+# fleet-recover.sh — fleet watchdog: fail only provably dead workers.
 #
-# Usage: zc-recover.sh
+# Usage: fleet-recover.sh
 #
 # fleet-v2 P1 (revised after the 2026-09-08 false-positive incident): a task
 # is declared dead ONLY when its worker pid is gone. A missing/moved window

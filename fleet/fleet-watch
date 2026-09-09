@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zc-watch.sh — escalation-aware wait-then-follow watcher (fleet-v2 P1).
+# fleet-watch.sh — escalation-aware wait-then-follow watcher (fleet-v2 P1).
 #
-# Usage: zc-watch.sh [--timeout SEC] <task-id>
+# Usage: fleet-watch.sh [--timeout SEC] <task-id>
 #
 # Waits for fleet/state/<task-id>.status to exist, then follows it, printing
 # each new line as it lands. Exits (0) when the LAST line is any attention
@@ -52,13 +52,13 @@ while :; do
         # may be mid-turn (turn boundaries can be minutes apart); the event
         # must not wait for it. Best-effort: never block the exit.
         ev="${lastline%%:*}"
-        "$FLEET_ROOT/zc-event.sh" "$task_id" "$ev" "${lastline#*: }" >/dev/null 2>&1 || true
+        "$FLEET_ROOT/fleet-event.sh" "$task_id" "$ev" "${lastline#*: }" >/dev/null 2>&1 || true
         exit 0
         ;;
     esac
   fi
   if [ "$deadline" -ne 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
-    "$FLEET_ROOT/zc-event.sh" "$task_id" "needs-decision" "watcher stall: no attention state after ${timeout_sec}s (last: $(tail -n 1 "$status"))" >/dev/null 2>&1 || true
+    "$FLEET_ROOT/fleet-event.sh" "$task_id" "needs-decision" "watcher stall: no attention state after ${timeout_sec}s (last: $(tail -n 1 "$status"))" >/dev/null 2>&1 || true
     echo "watch-timeout: $task_id (no attention state after ${timeout_sec}s; last: $(tail -n 1 "$status"))"
     exit 2
   fi

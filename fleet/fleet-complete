@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zc-complete.sh — COORDINATOR-ONLY terminal status write.
+# fleet-complete.sh — COORDINATOR-ONLY terminal status write.
 #
-# Usage: zc-complete.sh <task-id> <done|failed> <one-line-summary>
+# Usage: fleet-complete.sh <task-id> <done|failed> <one-line-summary>
 #
 # Appends the terminal status line to fleet/state/<task-id>.status after
 # the coordinator has verified artifacts (commits, tests, reports). A
@@ -17,11 +17,11 @@ summary="$3"
 
 case "$verdict" in
   done | failed) ;;
-  *) echo "zc-complete: verdict must be 'done' or 'failed', got: $verdict" >&2; exit 1 ;;
+  *) echo "fleet-complete: verdict must be 'done' or 'failed', got: $verdict" >&2; exit 1 ;;
 esac
 
 status="$FLEET_ROOT/state/$task_id.status"
-[ -f "$status" ] || { echo "zc-complete: no such task: $task_id" >&2; exit 1; }
+[ -f "$status" ] || { echo "fleet-complete: no such task: $task_id" >&2; exit 1; }
 
 # Status lines are one line by definition.
 summary="${summary//$'\n'/ }"

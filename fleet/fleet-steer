@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zc-steer.sh — coordinator-only steering/injection into a live worker TUI.
+# fleet-steer.sh — coordinator-only steering/injection into a live worker TUI.
 #
-# Usage: zc-steer.sh <task-id> <one-line message>
+# Usage: fleet-steer.sh <task-id> <one-line message>
 #
 # fleet-v2 P1. Appends a `steered:` line to the task status (the durable
 # record) and delivers the message to the worker's pane with tmux send-keys
@@ -19,13 +19,13 @@ msg="$2"
 status="$FLEET_ROOT/state/$task_id.status"
 window="fleet-$task_id"
 
-[ -f "$status" ] || { echo "zc-steer: no such task: $task_id" >&2; exit 1; }
+[ -f "$status" ] || { echo "fleet-steer: no such task: $task_id" >&2; exit 1; }
 if [ "${#msg}" -gt 300 ]; then
-  echo "zc-steer: message too long (${#msg} > 300 chars); put detail in the brief and steer with a pointer" >&2
+  echo "fleet-steer: message too long (${#msg} > 300 chars); put detail in the brief and steer with a pointer" >&2
   exit 1
 fi
 if ! tmux list-windows -t zswarm -F '#{window_name}' 2>/dev/null | grep -qx "$window"; then
-  echo "zc-steer: window zswarm:$window does not exist" >&2
+  echo "fleet-steer: window zswarm:$window does not exist" >&2
   exit 1
 fi
 

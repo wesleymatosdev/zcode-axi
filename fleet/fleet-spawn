@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zc-spawn.sh — spawn a named fleet worker in tmux session `zswarm`.
+# fleet-spawn.sh — spawn a named fleet worker in tmux session `zswarm`.
 #
-# Usage: zc-spawn.sh [--harness zcode|codex|claude] [--model <id>] <task-id> <brief-file> [cwd]
+# Usage: fleet-spawn.sh [--harness zcode|codex|claude] [--model <id>] <task-id> <brief-file> [cwd]
 #
 # fleet-v2 multi-harness (2026-09-09):
 #   zcode  (default) — interactive TUI, --mode yolo, brief delivered via
@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --harness) harness="$2"; shift 2 ;;
     --model)   model="$2";   shift 2 ;;
-    --harness=*|--model=*) echo "zc-spawn: use space-separated flags" >&2; exit 1 ;;
+    --harness=*|--model=*) echo "fleet-spawn: use space-separated flags" >&2; exit 1 ;;
     *) break ;;
   esac
 done
@@ -41,26 +41,26 @@ cwd="${3:-$PWD}"
 
 case "$task_id" in
   *[!A-Za-z0-9._-]*)
-    echo "zc-spawn: task-id may contain only [A-Za-z0-9._-]: $task_id" >&2
+    echo "fleet-spawn: task-id may contain only [A-Za-z0-9._-]: $task_id" >&2
     exit 1
     ;;
 esac
 case "$harness" in
   zcode|codex|claude|ollama) ;;
-  *) echo "zc-spawn: harness must be zcode|codex|claude|ollama: $harness" >&2; exit 1 ;;
+  *) echo "fleet-spawn: harness must be zcode|codex|claude|ollama: $harness" >&2; exit 1 ;;
 esac
-[ -f "$brief" ] || { echo "zc-spawn: brief not found: $brief" >&2; exit 1; }
-[ -d "$cwd" ] || { echo "zc-spawn: cwd not found: $cwd" >&2; exit 1; }
-command -v tmux >/dev/null || { echo "zc-spawn: tmux not on PATH" >&2; exit 1; }
+[ -f "$brief" ] || { echo "fleet-spawn: brief not found: $brief" >&2; exit 1; }
+[ -d "$cwd" ] || { echo "fleet-spawn: cwd not found: $cwd" >&2; exit 1; }
+command -v tmux >/dev/null || { echo "fleet-spawn: tmux not on PATH" >&2; exit 1; }
 
 # Resolve binaries explicitly: non-interactive shells lack ~/.local/bin, and
 # the fleet must never silently fall back to a different binary on PATH.
 BIN_DIR="$HOME/.local/bin"
 case "$harness" in
-  zcode)  ENGINE="${ZCODE_BIN:-$BIN_DIR/zcode}";  [ -x "$ENGINE" ] || { echo "zc-spawn: zcode not found at $ENGINE" >&2; exit 1; } ;;
-  codex)  ENGINE="${CODEX_BIN:-$BIN_DIR/codex}";  [ -x "$ENGINE" ] || { echo "zc-spawn: codex not found at $ENGINE" >&2; exit 1; } ;;
-  claude) ENGINE="${CLAUDE_BIN:-$BIN_DIR/claude}"; [ -x "$ENGINE" ] || { echo "zc-spawn: claude not found at $ENGINE" >&2; exit 1; } ;;
-  ollama) ENGINE="${OLLAMA_BIN:-ollama}"; command -v "$ENGINE" >/dev/null 2>&1 || { echo "zc-spawn: ollama not found on PATH" >&2; exit 1; } ;;
+  zcode)  ENGINE="${ZCODE_BIN:-$BIN_DIR/zcode}";  [ -x "$ENGINE" ] || { echo "fleet-spawn: zcode not found at $ENGINE" >&2; exit 1; } ;;
+  codex)  ENGINE="${CODEX_BIN:-$BIN_DIR/codex}";  [ -x "$ENGINE" ] || { echo "fleet-spawn: codex not found at $ENGINE" >&2; exit 1; } ;;
+  claude) ENGINE="${CLAUDE_BIN:-$BIN_DIR/claude}"; [ -x "$ENGINE" ] || { echo "fleet-spawn: claude not found at $ENGINE" >&2; exit 1; } ;;
+  ollama) ENGINE="${OLLAMA_BIN:-ollama}"; command -v "$ENGINE" >/dev/null 2>&1 || { echo "fleet-spawn: ollama not found on PATH" >&2; exit 1; } ;;
 esac
 
 brief_abs="$(cd "$(dirname "$brief")" && pwd)/$(basename "$brief")"
@@ -71,14 +71,14 @@ status="$FLEET_ROOT/state/$task_id.status"
 window="fleet-$task_id"
 
 if tmux list-windows -t zswarm -F '#{window_name}' 2>/dev/null | grep -qx "$window"; then
-  echo "zc-spawn: window zswarm:$window already exists; refusing to clobber" >&2
+  echo "fleet-spawn: window zswarm:$window already exists; refusing to clobber" >&2
   exit 1
 fi
 if [ -f "$status" ]; then
   last="$(tail -n 1 "$status")"
   case "$last" in
     done:* | failed:*) ;;  # archived task id reused: truncate to fresh file
-    *) echo "zc-spawn: task $task_id still open (last: $last); use a fresh id" >&2; exit 1 ;;
+    *) echo "fleet-spawn: task $task_id still open (last: $last); use a fresh id" >&2; exit 1 ;;
   esac
   : >"$status"
 fi
@@ -129,7 +129,7 @@ case "$harness" in
 esac
 tmux set-option -t "zswarm:$window" remain-on-exit on >/dev/null
 # Pin the name: agent TUIs (and tmux automatic-rename) otherwise rename the
-# window — a renamed window once made zc-recover declare a live worker dead.
+# window — a renamed window once made fleet-recover declare a live worker dead.
 tmux set-option -t "zswarm:$window" automatic-rename off >/dev/null
 # Fleet log: tmux-side capture keeps TUIs on a real PTY (zcode); one-shot
 # harnesses tee their own output too — capture adds pane-side evidence.
@@ -201,6 +201,6 @@ echo "spawned zswarm:$window harness=$harness model=${model:-default} pid=$zpid 
 echo "status=$status"
 echo "log=$log"
 if [ "$delivery" = "unverified" ] || [ "$ready" = "no" ]; then
-  echo "zc-spawn: WARNING — delivery/readiness not confirmed; inspect zswarm:$window (zcode lane unhealthy => coordinator may re-dispatch on another harness per routing law)" >&2
+  echo "fleet-spawn: WARNING — delivery/readiness not confirmed; inspect zswarm:$window (zcode lane unhealthy => coordinator may re-dispatch on another harness per routing law)" >&2
   exit 2
 fi

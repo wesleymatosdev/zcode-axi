@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# zc-digest.sh — deterministic fleet digest (monitor feed for the Telegram cron).
+# fleet-digest.sh — deterministic fleet digest (monitor feed for the Telegram cron).
 #
-# Usage: zc-digest.sh
+# Usage: fleet-digest.sh
 #
 # Output is DETERMINISTIC for a given fleet state: stable section order,
 # tasks sorted by id, no timestamps of its own. The cron monitor hashes this
@@ -10,7 +10,7 @@
 #
 # Sections:
 #   OPEN   — tasks whose last status line is nonterminal (with worker pid
-#            liveness so a dead worker is visible before zc-recover runs)
+#            liveness so a dead worker is visible before fleet-recover runs)
 #   CLOSED — tasks whose last line is done:/failed: AND whose status file
 #            changed within the last 48h (mtime window keeps this bounded)
 set -euo pipefail
