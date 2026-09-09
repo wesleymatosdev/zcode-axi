@@ -48,11 +48,17 @@ while :; do
     lastline="$(tail -n 1 "$status")"
     case "$lastline" in
       done:* | failed:* | blocked:* | needs-decision:* | ready-for-review:*)
+        # Publish to the Telegram topic IMMEDIATELY — the spawning session
+        # may be mid-turn (turn boundaries can be minutes apart); the event
+        # must not wait for it. Best-effort: never block the exit.
+        ev="${lastline%%:*}"
+        "$FLEET_ROOT/zc-event.sh" "$task_id" "$ev" "${lastline#*: }" >/dev/null 2>&1 || true
         exit 0
         ;;
     esac
   fi
   if [ "$deadline" -ne 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
+    "$FLEET_ROOT/zc-event.sh" "$task_id" "needs-decision" "watcher stall: no attention state after ${timeout_sec}s (last: $(tail -n 1 "$status"))" >/dev/null 2>&1 || true
     echo "watch-timeout: $task_id (no attention state after ${timeout_sec}s; last: $(tail -n 1 "$status"))"
     exit 2
   fi
