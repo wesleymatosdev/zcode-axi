@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# fleet-archive — scale-to-zero enforcement: kill worker windows whose task
+# has reached an attention state. This is the loop that closes the loop.
+#
+# Usage: fleet-archive [--age-min N] [--dry-run]
+#   --age-min N   only archive tasks whose attention line is at least N
+#                 minutes old (default: 10 — gives the in-session watcher a
+#                 window to do its thing before we sweep)
+#
+# Rules:
+# - Only touches windows it owns: zswarm:fleet-<task-id>.
+# - Only tasks whose LAST status line is attention-state
+#   (done:|failed:|blocked:|needs-decision:|ready-for-review:).
+#   Exception: blocked:/needs-decision: windows are archived too — the
+#   task's context lives in the status file + report; the coordinator can
+#   re-spawn to resume. The pane's scrollback is already tee'd to logs/.
+# - Never touches the bare zswarm root window or non-fleet windows.
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
+state="$FLEET_ROOT/state"
+age_min=10
+dry_run=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --age-min) age_min="$2"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    *) echo "unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
+
+now=$(date +%s)
+shopt -s nullglob
+for sf in "$state"/*.status; do
+  id="$(basename "$sf" .status)"
+  last="$(tail -n 1 "$sf")"
+  # strip optional leading ISO timestamp before matching
+  last="$(printf '%s' "$last" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})? +//')"
+  case "$last" in
+    done:* | failed:* | blocked:* | needs-decision:* | ready-for-review:*) ;;
+    *) continue ;;
+  esac
+
+  # age check: mtime of the status file (last write = when the attention
+  # line landed; workers do not write after it)
+  mtime=$(stat -f %m "$sf" 2>/dev/null || echo "$now")
+  age=$(( (now - mtime) / 60 ))
+  [ "$age" -lt "$age_min" ] && continue
+
+  window="fleet-$id"
+  if tmux list-windows -t zswarm -F '#{window_name}' 2>/dev/null | grep -qx "$window"; then
+    if [ "$dry_run" = 1 ]; then
+      echo "WOULD ARCHIVE $window (attention ${age}m ago)"
+    else
+      tmux kill-window -t "zswarm:$window" 2>/dev/null || true
+      printf 'archived: window killed (attention %sm ago)\n' "$age" >>"$sf"
+      echo "archived: $window (attention ${age}m ago)"
+    fi
+  fi
+done
+exit 0

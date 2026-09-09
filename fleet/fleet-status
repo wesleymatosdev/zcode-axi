@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
-# fleet-status.sh — supervisor dashboard feed.
+# fleet-status — supervisor dashboard feed.
 #
-# Usage: fleet-status.sh [task-id]
+# Usage: fleet-status [--archive] [--archive-age-min N] [task-id]
 #
 # One line per fleet task: id, last status line, log byte size, and whether
 # the spawned zcode process is still alive. With no argument: all tasks.
+# --archive: additionally run the scale-to-zero sweep (archive worker windows
+# whose task reached an attention state >= N minutes ago; default 10).
 set -euo pipefail
 
 FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+do_archive=0
+archive_age=10
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --archive) do_archive=1; shift ;;
+    --archive-age-min) archive_age="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+
+if [ "$do_archive" = 1 ]; then
+  bash "$FLEET_ROOT/fleet-archive" --age-min "$archive_age" || true
+fi
 state="$FLEET_ROOT/state"
 
 usage() { echo "usage: $0 [task-id]" >&2; exit 1; }
