@@ -63,7 +63,7 @@ Do not approve Screen Recording automatically. If exit 6 reports permission deni
 The scoped local commit could not be created because the sandbox exposes `.git` read-only. The attempted repository-local command failed before staging or committing with:
 
 ```text
-fatal: Unable to create '/Users/wesleymatos/projects/personal/zcode-axi/.git/index.lock': Operation not permitted
+fatal: Unable to create '~/project/projects/personal/zcode-axi/.git/index.lock': Operation not permitted
 ```
 
 No bypass or permission escalation was attempted, and no push was performed. The coordinator can create the scoped commit after reviewing the preserved working tree with:

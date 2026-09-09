@@ -2,15 +2,15 @@ bundle        : ZCodeWatcher.app (dev.wesleymatos.zcode-watcher)
 installed sig : adhoc
 requested sig : zcode-watcher-codesign
 identity      : CHANGED — one-time TCC re-consent will be required (printed below)
-[dry-run] (cd /Users/wesleymatos/projects/personal/zcode-axi && cargo build --release)
-[dry-run] mkdir -p /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS
-[dry-run] cp /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/Info.plist /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/Info.plist
-[dry-run] cp /Users/wesleymatos/projects/personal/zcode-axi/target/release/zcode-axi /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS/zcode-axi
-[dry-run] chmod 755 /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS/zcode-axi
-[dry-run] codesign --force --sign zcode-watcher-codesign /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
-[dry-run] codesign --verify --deep --strict /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
-[dry-run] codesign -dv --verbose=2 "/Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app" (output printed here in a real run)
-staged (not installed): /Users/wesleymatos/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
+[dry-run] (cd ~/project/projects/personal/zcode-axi && cargo build --release)
+[dry-run] mkdir -p ~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS
+[dry-run] cp ~/project/projects/personal/zcode-axi/packaging-watcher/Info.plist ~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/Info.plist
+[dry-run] cp ~/project/projects/personal/zcode-axi/target/release/zcode-axi ~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS/zcode-axi
+[dry-run] chmod 755 ~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app/Contents/MacOS/zcode-axi
+[dry-run] codesign --force --sign zcode-watcher-codesign ~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
+[dry-run] codesign --verify --deep --strict ~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
+[dry-run] codesign -dv --verbose=2 "~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app" (output printed here in a real run)
+staged (not installed): ~/project/projects/personal/zcode-axi/packaging-watcher/build/ZCodeWatcher.app
 
 =========================================================================
  TCC RE-CONSENT REQUIRED (signing identity changed vs installed bundle)

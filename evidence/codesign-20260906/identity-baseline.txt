@@ -5,7 +5,7 @@ $ security find-identity -v
      0 valid identities found
 
 $ codesign -dv ~/Applications/ZCodeWatcher.app
-Executable=/Users/wesleymatos/Applications/ZCodeWatcher.app/Contents/MacOS/zcode-axi
+Executable=~/project/Applications/ZCodeWatcher.app/Contents/MacOS/zcode-axi
 Identifier=dev.wesleymatos.zcode-watcher
 Format=app bundle with Mach-O thin (arm64)
 CodeDirectory v=20400 size=13622 flags=0x2(adhoc) hashes=419+3 location=embedded

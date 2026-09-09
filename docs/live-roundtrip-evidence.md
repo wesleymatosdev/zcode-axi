@@ -7,7 +7,7 @@ Binary: `target/release/zcode-axi` (release build). All transcripts verbatim.
 
 ```
 $ zcode-axi status
-zcode=/Users/wesleymatos/.local/bin/zcode	version=0.16.5	doctor_exit=0	auth=ok	in_free_window=true
+zcode=~/project/.local/bin/zcode	version=0.16.5	doctor_exit=0	auth=ok	in_free_window=true
 window_advisory	now is inside the daily free window (local 2026-09-03 18:38:59)
 
 exit_code=0
@@ -98,7 +98,7 @@ exit_code=0
 
 ```json
 $ zcode-axi --json status | head -c 1200
-{"zcode_path":"/Users/wesleymatos/.local/bin/zcode","zcode_version":"0.16.5","doctor_exit":0,"doctor":{"cli":{"name":"zcode","processName":"zcode-cli","version":"0.16.5"},"packaging":{"default":"node-bundle","sea":"optional"},"runtime":{"arch":"arm64","cwd":"/Users/wesleymatos/projects/personal/zcode-axi","execPath":"/Users/wesleymatos/.hermes/node/bin/node","node":"v26.7.0","platform":"darwin","processTitle":"zcode-cli","sea":false}},"auth":"ok","auth_checked_by":"zcode doctor --json exit + trivial headless round-trip (headless round-trip succeeded); credentials never read","campaign_window":{"in_window":true,"window":"Sep 3–20 2026, 12:00–22:00 America/Sao_Paulo (UTC-3)","detail":"now is inside the daily free window (local 2026-09-03 18:39:50)","next_window_unix":null},"campaign_window_disclaimer":"advisory only; zcode-axi does not know or claim actual quota state"}
+{"zcode_path":"~/project/.local/bin/zcode","zcode_version":"0.16.5","doctor_exit":0,"doctor":{"cli":{"name":"zcode","processName":"zcode-cli","version":"0.16.5"},"packaging":{"default":"node-bundle","sea":"optional"},"runtime":{"arch":"arm64","cwd":"~/project/projects/personal/zcode-axi","execPath":"~/project/.hermes/node/bin/node","node":"v26.7.0","platform":"darwin","processTitle":"zcode-cli","sea":false}},"auth":"ok","auth_checked_by":"zcode doctor --json exit + trivial headless round-trip (headless round-trip succeeded); credentials never read","campaign_window":{"in_window":true,"window":"Sep 3–20 2026, 12:00–22:00 America/Sao_Paulo (UTC-3)","detail":"now is inside the daily free window (local 2026-09-03 18:39:50)","next_window_unix":null},"campaign_window_disclaimer":"advisory only; zcode-axi does not know or claim actual quota state"}
 
 ```
 

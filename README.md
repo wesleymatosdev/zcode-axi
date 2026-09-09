@@ -96,8 +96,8 @@ run --cwd DIR --gui --brief FILE [--mode M] [--notify telegram:TARGET]
 {
   "id": "20260906T204512-zcode-gui-lane",
   "created_at": 1788717912000,
-  "brief_path": "/Users/wesleymatos/projects/personal/swarm/briefs/zcode-gui-lane.txt",
-  "cwd": "/Users/wesleymatos/projects/personal/zcode-axi",
+  "brief_path": "~/project/projects/personal/swarm/briefs/zcode-gui-lane.txt",
+  "cwd": "~/project/projects/personal/zcode-axi",
   "mode": "gui",
   "notify": "telegram:W",
   "status": "queued",

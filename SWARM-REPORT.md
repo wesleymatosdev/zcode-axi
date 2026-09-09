@@ -1,6 +1,6 @@
 # SWARM-REPORT — zcode-axi v0.1
 
-Card: t_868f3cf1 · Worker: zcode (GLM) · Date: 2026-09-03 · Repo: `/Users/wesleymatos/projects/personal/zcode-axi`
+Card: t_868f3cf1 · Worker: zcode (GLM) · Date: 2026-09-03 · Repo: `~/project/projects/personal/zcode-axi`
 
 ## 1. Protocol characterization result
 

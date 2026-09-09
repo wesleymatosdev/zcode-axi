@@ -66,7 +66,7 @@ list truncated for length; 10 sessions returned live):
 
 ```json
 -> {"id":1,"method":"session/list","params":{}}
-<- {"id":1,"result":{"sessions":[{"createdAt":1788470528730,"mode":"build","traceId":"84de47e8-680c-4851-b6af-1c585992cfc0","sessionId":"sess_21c33923-fd70-4ab2-bc51-f6f3c313bfdf","sessionKind":"interactive","status":"idle","title":"# SWARM BRIEF — zcode-axi v0.1 (worker: zcode, GLM) You a...","titleSource":"first_input","updatedAt":1788470656390,"workspace":{"workspaceKey":"/Users/wesleymatos/projects/personal/zcode-axi","workspacePath":"/Users/wesleymatos/projects/personal/zcode-axi"}}, ...]}}
+<- {"id":1,"result":{"sessions":[{"createdAt":1788470528730,"mode":"build","traceId":"84de47e8-680c-4851-b6af-1c585992cfc0","sessionId":"sess_21c33923-fd70-4ab2-bc51-f6f3c313bfdf","sessionKind":"interactive","status":"idle","title":"# SWARM BRIEF — zcode-axi v0.1 (worker: zcode, GLM) You a...","titleSource":"first_input","updatedAt":1788470656390,"workspace":{"workspaceKey":"~/project/projects/personal/zcode-axi","workspacePath":"~/project/projects/personal/zcode-axi"}}, ...]}}
 ```
 
 Attempt 4 — `usage/stats` (empty params) — param validation error teaches the schema:
