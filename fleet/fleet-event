@@ -27,5 +27,7 @@ case "$event" in
 esac
 
 msg="${icon} fleet/${task_id} ${event}${detail:+ — ${detail}}"
-HERMES_BIN="$HOME/.hermes/hermes-agent/venv/bin/hermes"
+# HERMES_BIN override lets tests exercise the event path without touching
+# the real Telegram topic (e.g. HERMES_BIN=/bin/echo).
+HERMES_BIN="${HERMES_BIN:-$HOME/.hermes/hermes-agent/venv/bin/hermes}"
 exec "$HERMES_BIN" send -t telegram "$msg"

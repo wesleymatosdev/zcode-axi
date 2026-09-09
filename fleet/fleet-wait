@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# fleet-wait — coordinator-side wait, push-first. Replaces fleet-watch.
+#
+# Usage: fleet-wait [--timeout SEC] <task-id>
+#        fleet-wait <task-id> [SEC]          (both forms accepted)
+#
+# Arms fleet-wait-push (subscribes this task on the bus) and exits with the
+# event payload on any attention state — done:/failed:/blocked:/
+# needs-decision:/ready-for-review: — same stdout contract and exit codes
+# as fleet-watch (0 = attention state, triggering line printed last;
+# 2 = timeout stall). The wake is a push (<50ms budget, measured ~0.5–13ms
+# on loopback) instead of a 1s status-file scrape, so a worker asking for
+# help re-enters the coordinator on its own — Wesley never polls.
+#
+# Fallback (documented, NEVER silent): if busd is unreachable even after a
+# start-on-demand attempt (fleet-bus ensure), or fleet-wait-push is not
+# installed, fleet-wait says so on stderr and execs the old fleet-watch
+# poll loop — degraded to yesterday's latency, never broken. Either way the
+# status file remains the durable record; push is notification only.
+#
+# Keeps fleet-watch's sandbox-fallback bridge: while the wait runs, a
+# one-shot worker's <cwd>/.fleet-status lines are bridged into the
+# canonical status file (fleet-wait-push's poll ticker then sees them).
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
+addr="${FLEET_BUS_ADDR:-tcp:127.0.0.1:47777}"
+
+timeout_sec=0
+if [ "${1:-}" = "--timeout" ]; then
+  [ $# -eq 3 ] || { echo "usage: $0 [--timeout SEC] <task-id> | $0 <task-id> [timeout]" >&2; exit 1; }
+  timeout_sec="$2"
+  shift 2
+fi
+case $# in
+  1) task_id="$1" ;;
+  2) task_id="$1"; timeout_sec="$2" ;;
+  *) echo "usage: $0 [--timeout SEC] <task-id> | $0 <task-id> [timeout]" >&2; exit 1 ;;
+esac
+case "$timeout_sec" in
+  '' | *[!0-9]*) echo "fleet-wait: timeout must be a non-negative integer of seconds: $timeout_sec" >&2; exit 1 ;;
+esac
+status="$FLEET_ROOT/state/$task_id.status"
+
+# Sandbox fallback bridge (same mechanics as fleet-watch): one-shot workers
+# may only reach <cwd>/.fleet-status; bridge new lines into the canonical
+# file for the lifetime of this wait.
+worker_cwd="$(sed -n 's/^spawned: .* cwd=\([^ ]*\) pid=.*/\1/p' "$status" 2>/dev/null | tail -n 1)"
+fallback="${worker_cwd:+$worker_cwd/.fleet-status}"
+bridge_pid=""
+if [ -n "$fallback" ]; then
+  (
+    fallback_last=0
+    while :; do
+      if [ -f "$fallback" ] && [ -f "$status" ]; then
+        fcur="$(wc -l <"$fallback" | tr -d ' ')"
+        if [ "$fcur" -gt "$fallback_last" ]; then
+          sed -n "$((fallback_last + 1)),${fcur}p" "$fallback" >>"$status"
+          fallback_last="$fcur"
+        fi
+      fi
+      sleep 1
+    done
+  ) &
+  bridge_pid=$!
+fi
+cleanup() { if [ -n "$bridge_pid" ]; then kill "$bridge_pid" 2>/dev/null || true; fi; }
+trap cleanup EXIT
+
+# Match on the line with an optional leading ISO timestamp stripped —
+# workers timestamp their entries and the keyword may not be first.
+strip_ts() { printf '%s' "$1" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})? +//'; }
+
+poll_fallback() {
+  echo "fleet-wait: FALLBACK — $1" >&2
+  echo "fleet-wait: push layer degraded, using the fleet-watch poll loop; the status file remains the record" >&2
+  if [ "$timeout_sec" -gt 0 ]; then
+    exec "$FLEET_ROOT/fleet-watch" --timeout "$timeout_sec" "$task_id"
+  else
+    exec "$FLEET_ROOT/fleet-watch" "$task_id"
+  fi
+}
+
+# Push path needs the bus AND the client binary; either missing ⇒ loud
+# fallback to the old poll loop (never a silent failure).
+if ! "$FLEET_ROOT/fleet-bus" ensure >/dev/null 2>&1; then
+  poll_fallback "bus unreachable at $addr (start-on-demand attempted and failed)"
+fi
+waitpush=""
+for cand in "${FLEET_WAITPUSH_BIN:-}" "$HOME/.local/bin/fleet-wait-push" "$HOME/projects/personal/fleet-bus/bin/fleet-wait-push"; do
+  if [ -n "$cand" ] && [ -x "$cand" ]; then waitpush="$cand"; break; fi
+done
+[ -n "$waitpush" ] || poll_fallback "fleet-wait-push binary not found (\$FLEET_WAITPUSH_BIN, ~/.local/bin, ~/projects/personal/fleet-bus/bin)"
+
+outfile="$(mktemp "${TMPDIR:-/tmp}/fleet-wait.$task_id.XXXXXX")"
+if [ "$timeout_sec" -gt 0 ]; then
+  set +e
+  "$waitpush" --state-dir "$FLEET_ROOT/state" -timeout "$timeout_sec" "$task_id" | tee "$outfile"
+  rc="${PIPESTATUS[0]}"
+  set -e
+else
+  set +e
+  "$waitpush" --state-dir "$FLEET_ROOT/state" "$task_id" | tee "$outfile"
+  rc="${PIPESTATUS[0]}"
+  set -e
+fi
+
+# Publish to the Telegram topic on attention/stall — same as fleet-watch:
+# the spawning session may be mid-turn; the event must not wait for it.
+# Best-effort: never block the exit.
+lastline="$(strip_ts "$(tail -n 1 "$outfile" 2>/dev/null || true)")"
+case "$rc" in
+  0)
+    if [ -n "$lastline" ]; then
+      "$FLEET_ROOT/fleet-event" "$task_id" "${lastline%%:*}" "${lastline#*: }" >/dev/null 2>&1 || true
+    fi
+    ;;
+  2)
+    "$FLEET_ROOT/fleet-event" "$task_id" "needs-decision" \
+      "watcher stall: no attention state after ${timeout_sec}s (last: $(tail -n 1 "$status" 2>/dev/null || echo '?'))" \
+      >/dev/null 2>&1 || true
+    ;;
+esac
+rm -f "$outfile"
+exit "$rc"

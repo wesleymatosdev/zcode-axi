@@ -15,31 +15,95 @@ Renamed from `zc-*.sh` to `fleet-*` (no extension) when multi-harness landed
 
 | Script | Purpose |
 |---|---|
-| `fleet-spawn [--harness zcode\|zcode-auto\|codex\|codex-tui\|claude\|claude-code\|ollama] [--model <id>] <task-id> <brief-file> [cwd]` | spawn named window `fleet-<task-id>` in tmux session `zswarm` on the chosen harness (TUI via send-keys, one-shot via argv — see the script's own header comment for the full per-harness table), verify readiness/delivery; tee via `tmux pipe-pane` to `logs/<task-id>.log` |
-| `fleet-watch [--timeout SEC] <task-id>` | wait-then-follow watcher; exits on ANY attention state: `done:` `failed:` `blocked:` `needs-decision:` `ready-for-review:` (exit 2 on timeout = stall). Also bridges a sandboxed worker's `<cwd>/.fleet-status` fallback lines into the canonical status file |
+| `fleet-spawn [--harness zcode\|zcode-auto\|codex\|codex-tui\|claude\|claude-code\|ollama] [--model <id>] [--no-notify] <task-id> <brief-file> [cwd]` | spawn named window `fleet-<task-id>` in tmux session `zswarm` on the chosen harness (TUI via send-keys, one-shot via argv — see the script's own header comment for the full per-harness table), verify readiness/delivery; tee via `tmux pipe-pane` to `logs/<task-id>.log`. By default also starts the push layer: publishes `spawned`/`dispatched` bus events and starts `fleet-notifyd` (below); `--no-notify` opts out |
+| `fleet-wait [--timeout SEC] <task-id>` (also `<task-id> [SEC]`) | the coordinator's wait, **push-first**: arms `fleet-wait-push` (subscribes the task on the bus) and exits with the event payload on ANY attention state: `done:` `failed:` `blocked:` `needs-decision:` `ready-for-review:` (exit 2 on timeout = stall). Wake is a push (<50ms budget; measured sub-1ms–13ms loopback) instead of a 1s scrape. Same stdout contract and exit codes fleet-watch had. **Fallback (never silent):** if the bus is unreachable even after a start-on-demand attempt, or fleet-wait-push is not installed, fleet-wait prints a `FALLBACK` banner on stderr and execs the old `fleet-watch` poll loop — degraded to yesterday's latency, never broken. Also bridges a sandboxed worker's `<cwd>/.fleet-status` fallback lines into the canonical status file |
+| `fleet-watch [--timeout SEC] <task-id>` | the old poll-loop watcher; kept as fleet-wait's fallback path and for manual use. (2026-09-09: fixed its silent `fleet-event.sh` reference — the rename had left it no-op'ing the Telegram publish) |
+| `fleet-bus status\|ensure\|start\|stop` | busd lifecycle: health-check (`status`), start-on-demand with post-start health check (`ensure` — what fleet-spawn/fleet-wait/fleet-notifyd call), explicit `start`/`stop`. Resolves busd explicitly (`$FLEET_BUSD_BIN` → `~/.local/bin` → fleet-bus repo `bin/`); never a silent PATH fallback |
+| `fleet-notifyd <task-id>` | spawn-side notify shim (started by fleet-spawn, not by hand): tails `state/<task-id>.status` and pushes every new `working:`/`blocked:`/`needs-decision:`/`ready-for-review:`/`done:`/`failed:` line to the bus via `pushevent` — workers never change, briefs never mention the bus. Exits on `done:`/`failed:` (after pushing), archived status file, or swept window; log at `logs/<task-id>.notify.log` |
 | `fleet-status [--archive] [--archive-age-min N] [task-id]` | dashboard feed: id, last status line, log size, worker pid alive. `--archive` additionally runs `fleet-archive`'s scale-to-zero sweep |
 | `fleet-archive [--age-min N] [--dry-run]` | kills windows whose task reached an attention state ≥N minutes ago (default 10); also scans every live `fleet-*` window for an unanswered dialog and prints `DIALOG-PENDING <window>` (flag only — never auto-killed) |
 | `fleet-complete <task-id> <done\|failed> <summary>` | coordinator-only terminal write, after artifact verification; prints a reminder if the task's window is still open (unarchived) |
 | `fleet-steer <task-id> <one-line>` | coordinator steering: durable `steered:` line + send-keys pointer (≤300 chars; detail belongs in the brief) |
 | `fleet-watchdog` | watchdog: appends `failed: worker died mid-task` to open tasks whose pid is gone |
 | `fleet-digest` | deterministic digest for the cron monitor: OPEN (escalations + liveness only), CLOSED (fresh 48h). Progress chatter is invisible by design |
-| `fleet-event <task-id> <event> [detail]` | publishes an attention-state event to the fleet's Telegram topic (`hermes send`); called by `fleet-watch` on exit |
+| `fleet-event <task-id> <event> [detail]` | publishes an attention-state event to the fleet's Telegram topic (`hermes send`); called by `fleet-wait`/`fleet-watch` on exit. `HERMES_BIN` override for tests |
 
 ## The loop (how the coordinator dispatches)
 
 ```
 bash fleet/fleet-spawn <id> brief.md <cwd>         # foreground: returns ready/delivery evidence
-bash fleet/fleet-watch --timeout 2400 <id>         # BACKGROUND job with exit notification —
-                                                # any attention state re-enters the
-                                                # coordinator on its own; no polling
+                                                # + starts the notify shim (push layer)
+bash fleet/fleet-wait --timeout 2400 <id>          # BACKGROUND job with exit notification —
+                                                # push-wake on any attention state (<50ms);
+                                                # falls back to the poll loop if busd is
+                                                # down (loud banner, never silent)
 # on wake: verify artifacts (report exists, commits, tests), then:
 bash fleet/fleet-complete <id> done "<one-line evidence-backed summary>"
 ```
 
+**busd requirement:** the push layer needs `busd` resident (default
+`tcp:127.0.0.1:47777`). You do not manage it by hand — `fleet-bus ensure`
+(start-on-demand, health-checked) runs inside every spawn/wait/notify
+path. If the bus is down, everything still works at poll latency and every
+affected command says so on stderr.
+
+<details>
+<summary>LaunchAgent option (NOT installed by default — Wesley's call)</summary>
+
+Start-on-demand covers daily operation. To make busd reboot/keepalive
+resilient, install a user agent — deliberately not done for you:
+
+```sh
+BUSD="$HOME/projects/personal/fleet-bus/bin/busd"   # or ~/.local/bin/busd
+LOG="$HOME/projects/personal/zcode-axi/fleet/logs/busd.log"
+cat > ~/Library/LaunchAgents/dev.fleet.busd.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.fleet.busd</string>
+  <key>ProgramArguments</key><array>
+    <string>$BUSD</string><string>-addr</string><string>tcp:127.0.0.1:47777</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict></plist>
+EOF
+launchctl load ~/Library/LaunchAgents/dev.fleet.busd.plist
+```
+
+</details>
+
+## Push bus (fleet-bus) — the law of the layers
+
+The **status file is the durable record; the bus is notification only.**
+`fleet/state/<task-id>.status` stays append-only and authoritative —
+fleet-status/fleet-digest/fleet-archive only ever read it. A missed push
+costs latency, never correctness, because the poll fallback reconciles
+from the file. Concretely, the degradation ladder when busd is down:
+
+1. `fleet-wait` tries `fleet-bus ensure` (start-on-demand).
+2. Bus still unreachable → loud `FALLBACK` banner, exec of the old
+   `fleet-watch` poll loop (1s scrape, same exit codes).
+3. Bus flaps mid-wait → `fleet-wait-push`'s internal 2s safety-net poll and
+   auto-reconnect paper over it (missed events cost one poll interval).
+4. `fleet-notifyd` can't push → warns in its log, keeps tailing; lines are
+   already on disk.
+
+Events publish as `fleet.task.<id>.<state>` topics (state = the status
+grammar's bus keywords: `working` `blocked` `needs-decision`
+`ready-for-review` `done` `failed`); `spawned`/`dispatched` go out at
+dispatch with `state=working` and the phase in the event's `phase` field.
+Non-bus lines (`failed-reason:` `handoff:` `steered:`) are file-only by
+design. The bus binaries come from the fleet-bus repo (v0.2 owner: the
+fleet-bus-v02 worker); fleet scripts integrate against the CLIs only and
+never write into that repo.
+
 AFK lane: the `fleet-v2 digest supervisor` cron (every 10m) hashes
 `fleet-watchdog && fleet-digest` output; a change wakes it to verify and push
 ONE line per task to Telegram ("✅ id: result · evidence"). Identical digest =
-free tick. The Telegram context contract: one dispatch line in, one
+free tick. The Telegram context contract: one dispatch line in one
 completion line out; everything else stays on disk.
 
 ## Status-line grammar
@@ -121,10 +185,13 @@ belongs to the coordinator's verdict.
 fleet/
   fleet-*  probe-brief.txt
   logs/<task-id>.log     pane capture (pipe-pane), full worker output
+  logs/<task-id>.notify.log  fleet-notifyd's per-task publish trail
+  logs/busd.log          resident broker log (start-on-demand + LaunchAgent)
   state/<task-id>.status append-only status file (the contract)
   <task-cwd>/.fleet-status  sandbox fallback (only when a one-shot harness
                              can't reach state/<id>.status directly);
-                             fleet-watch bridges it back into state/<id>.status
+                             fleet-wait/fleet-watch bridge it back into
+                             state/<id>.status
 ```
 
 Nothing under `~/.zcode` is ever written by these scripts.

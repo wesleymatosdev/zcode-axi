@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # fleet-spawn.sh — spawn a named fleet worker in tmux session `zswarm`.
 #
-# Usage: fleet-spawn.sh [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] <task-id> <brief-file> [cwd]
+# Usage: fleet-spawn.sh [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] [--no-notify] <task-id> <brief-file> [cwd]
+#
+# Push notify (fleet-bus integration, 2026-09-09): by default every spawn
+# publishes spawned/dispatched bus events and starts fleet-notifyd, a
+# status-file tail shim that pushes each new worker status line to the bus
+# (pushevent) as it lands — workers never change, briefs never mention the
+# bus. Bus down degrades to the watchers' poll fallback, never breaks a
+# spawn. --no-notify opts out (file-only, the pre-bus behavior).
 #
 # fleet-v2 multi-harness (2026-09-09):
 #   zcode       (default) — interactive TUI, --mode yolo, brief delivered
@@ -36,16 +43,19 @@ FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 harness="zcode"
 model=""
+notify=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --harness) harness="$2"; shift 2 ;;
     --model)   model="$2";   shift 2 ;;
+    --notify)  notify=1;     shift ;;
+    --no-notify) notify=0;   shift ;;
     --harness=*|--model=*) echo "fleet-spawn: use space-separated flags" >&2; exit 1 ;;
     *) break ;;
   esac
 done
 
-usage() { echo "usage: $0 [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] <task-id> <brief-file> [cwd]" >&2; exit 1; }
+usage() { echo "usage: $0 [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] [--no-notify] <task-id> <brief-file> [cwd]" >&2; exit 1; }
 
 [ $# -ge 2 ] && [ $# -le 3 ] || usage
 task_id="$1"
@@ -276,6 +286,32 @@ case "$harness" in
     ;;
 esac
 printf 'dispatched: %s ready=%s mode=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ready" "$delivery" >>"$status"
+
+# Push notify (fleet-bus integration): publish spawned/dispatched to the
+# bus, then start fleet-notifyd so every worker status line is pushed as it
+# lands. Best-effort by law — a bus problem degrades to the watchers' poll
+# fallback and must never fail (or slow) the spawn itself.
+if [ "$notify" = "1" ]; then
+  bus_addr="${FLEET_BUS_ADDR:-tcp:127.0.0.1:47777}"
+  pushevent_bin=""
+  for pbin in "${FLEET_PUSHEVENT_BIN:-}" "$HOME/.local/bin/pushevent" "$HOME/projects/personal/fleet-bus/bin/pushevent"; do
+    if [ -n "$pbin" ] && [ -x "$pbin" ]; then pushevent_bin="$pbin"; break; fi
+  done
+  bus_state="down (push degraded; watchers fall back to polling)"
+  if [ -n "$pushevent_bin" ] && "$FLEET_ROOT/fleet-bus" ensure >/dev/null 2>&1; then
+    bus_state="up"
+    "$pushevent_bin" -bus "$bus_addr" -state working -phase spawned \
+      -summary "harness=$harness model=${model:-default} pid=$zpid" "$task_id" >/dev/null 2>&1 || true
+    "$pushevent_bin" -bus "$bus_addr" -state working -phase dispatched \
+      -summary "ready=$ready mode=$delivery" "$task_id" >/dev/null 2>&1 || true
+  fi
+  nohup "$FLEET_ROOT/fleet-notifyd" "$task_id" >>"$FLEET_ROOT/logs/$task_id.notify.log" 2>&1 &
+  notifyd_pid=$!
+  disown 2>/dev/null || true
+  echo "notify: shim pid=$notifyd_pid bus=$bus_state log=$FLEET_ROOT/logs/$task_id.notify.log"
+else
+  echo "notify: disabled (--no-notify); watchers poll the status file"
+fi
 
 echo "spawned zswarm:$window harness=$harness model=${model:-default} pid=$zpid ready=$ready delivery=$delivery"
 echo "status=$status"

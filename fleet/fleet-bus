@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# fleet-bus — busd lifecycle helper: the push layer's start-on-demand story.
+#
+# Usage: fleet-bus status|ensure|start|stop
+#   status  report bus health (exit 0 = up, 1 = down)
+#   ensure  start busd if down and health-check before returning
+#           (exit 0 = up, 1 = still down; never throws mid-flow)
+#   start   unconditional start attempt (no-op when already up)
+#   stop    stop a busd listening on the addr
+#
+# busd is stateless by design (fleet-bus law: the status file is the record)
+# — a restart loses nothing but in-flight events, and the watchers' poll
+# fallback reconciles those. Resident operation is the goal (LaunchAgent
+# option documented in the README, NOT installed by default); start-on-
+# demand from fleet-spawn/fleet-wait/fleet-notifyd is the floor that keeps
+# push alive without one.
+#
+# Binary resolution follows the fleet law (resolve explicitly, never a
+# silent PATH fallback): $FLEET_BUSD_BIN, then ~/.local/bin (the durable
+# install per fleet-bus's integration plan), then the fleet-bus repo's bin/
+# as a read-only dev-lane fallback — we never write into that repo.
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
+addr="${FLEET_BUS_ADDR:-tcp:127.0.0.1:47777}"
+
+resolve_busd() {
+  local cand
+  for cand in "${FLEET_BUSD_BIN:-}" "$HOME/.local/bin/busd" "$HOME/projects/personal/fleet-bus/bin/busd"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then printf '%s' "$cand"; return 0; fi
+  done
+  return 1
+}
+
+bus_up() {
+  case "$addr" in
+    tcp:*)
+      local hp="${addr#tcp:}"
+      local host="${hp%:*}"
+      local port="${hp##*:}"
+      nc -z -w 1 "$host" "$port" >/dev/null 2>&1
+      ;;
+    unix:*)
+      local p="${addr#unix:}"
+      [ -S "$p" ] && nc -z -U -w 1 "$p" >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+bus_pid() {
+  case "$addr" in
+    tcp:*)
+      local hp="${addr#tcp:}"
+      local port="${hp##*:}"
+      lsof -ti -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n 1
+      ;;
+    *) ;;
+  esac
+}
+
+do_start() {
+  if bus_up; then
+    echo "fleet-bus: up addr=$addr pid=$(bus_pid)"
+    return 0
+  fi
+  local busd
+  if ! busd="$(resolve_busd)"; then
+    echo "fleet-bus: busd binary not found (looked in \$FLEET_BUSD_BIN, ~/.local/bin, ~/projects/personal/fleet-bus/bin) — push layer down; poll fallback unaffected" >&2
+    return 1
+  fi
+  mkdir -p "$FLEET_ROOT/logs"
+  nohup "$busd" -addr "$addr" >>"$FLEET_ROOT/logs/busd.log" 2>&1 &
+  disown 2>/dev/null || true
+  local i=0
+  while ! bus_up; do
+    i=$((i + 1))
+    [ "$i" -ge 25 ] && break
+    sleep 0.1
+  done
+  if bus_up; then
+    echo "fleet-bus: started busd addr=$addr pid=$(bus_pid) bin=$busd log=$FLEET_ROOT/logs/busd.log"
+    return 0
+  fi
+  echo "fleet-bus: busd did not come up within 2.5s (log: $FLEET_ROOT/logs/busd.log)" >&2
+  return 1
+}
+
+case "${1:-}" in
+  status)
+    if bus_up; then
+      echo "fleet-bus: up addr=$addr pid=$(bus_pid)"
+      exit 0
+    fi
+    echo "fleet-bus: down addr=$addr"
+    exit 1
+    ;;
+  ensure)
+    if bus_up; then
+      echo "fleet-bus: up addr=$addr pid=$(bus_pid)"
+      exit 0
+    fi
+    do_start
+    ;;
+  start) do_start ;;
+  stop)
+    pid="$(bus_pid)"
+    if [ -n "$pid" ]; then
+      kill "$pid"
+      echo "fleet-bus: stopped pid=$pid"
+    else
+      echo "fleet-bus: nothing listening on $addr"
+    fi
+    ;;
+  *)
+    echo "usage: $0 status|ensure|start|stop" >&2
+    exit 1
+    ;;
+esac
