@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # fleet-notifyd — spawn-side notify shim (the worker never knows it exists).
 #
-# Usage: fleet-notifyd <task-id>   (started by fleet-spawn, not by hand)
+# Usage: fleet-notifyd [--notifier nats|webhook|multi] <task-id>
+#        (started by fleet-spawn, not by hand; --notifier defaults to
+#        $FLEET_NOTIFIER, else nats)
 #
 # Tails fleet/state/<task-id>.status and publishes every new worker status
 # line to the bus via `pushevent`, so the coordinator's fleet-wait wakes on
 # push within milliseconds of the write. The tail/timer-shim shape was
 # chosen precisely so NO worker brief or behavior changes — the shim lives
 # in the spawn flow, workers keep appending lines exactly as before.
+#
+# Delivery goes through fleet-bus's port seam (port.Notifier): --notifier
+# picks the adapter — nats (the bus, default), webhook (POST to the
+# Hermes gateway's webhook receiver; opt-in, needs FLEET_WEBHOOK_URL +
+# FLEET_WEBHOOK_SECRET env — the route's HMAC secret, never logged), or
+# multi (fan-out to both). Webhook is IDE/consumer-agnostic by design:
+# hermes is just the first consumer shape the port proves.
 #
 # Law: the status file is the durable record; this shim is only the
 # notification layer. Bus down ⇒ the line is already on disk; the shim
@@ -29,8 +38,30 @@ set -euo pipefail
 FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
 addr="${FLEET_BUS_ADDR:-tcp:127.0.0.1:47777}"
 
-[ $# -eq 1 ] || { echo "usage: $0 <task-id>" >&2; exit 1; }
-task_id="$1"
+task_id=""
+notifier="${FLEET_NOTIFIER:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --notifier)
+      [ $# -ge 2 ] || { echo "usage: $0 [--notifier nats|webhook|multi] <task-id>" >&2; exit 1; }
+      notifier="$2"; shift 2 ;;
+    --notifier=*)
+      notifier="${1#--notifier=}"; shift ;;
+    *)
+      if [ -z "$task_id" ]; then
+        task_id="$1"; shift
+      else
+        echo "usage: $0 [--notifier nats|webhook|multi] <task-id>" >&2; exit 1
+      fi ;;
+  esac
+done
+[ -n "$task_id" ] || { echo "usage: $0 [--notifier nats|webhook|multi] <task-id>" >&2; exit 1; }
+[ -n "$notifier" ] || notifier="nats"
+case "$notifier" in
+  nats | webhook | multi) ;;
+  *) echo "fleet-notifyd: unknown --notifier '$notifier' (want nats|webhook|multi)" >&2; exit 1 ;;
+esac
+
 status="$FLEET_ROOT/state/$task_id.status"
 window="fleet-$task_id"
 
@@ -56,10 +87,10 @@ pushevent_bin="$(resolve_pushevent)" || {
 strip_ts() { printf '%s' "$1" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})? +//'; }
 
 publish() {
-  "$pushevent_bin" -bus "$addr" -state "$1" -summary "$2" "$task_id" >/dev/null 2>&1
+  "$pushevent_bin" -bus "$addr" -state "$1" -summary "$2" --notifier "$notifier" "$task_id" >/dev/null 2>&1
 }
 
-note "tail start task=$task_id addr=$addr"
+note "tail start task=$task_id addr=$addr notifier=$notifier"
 last=0
 ensure_tried=0
 warned=0
@@ -79,7 +110,9 @@ while :; do
         *) note "skip non-bus line: $kw"; continue ;;
       esac
       if ! publish "$kw" "$summary"; then
-        if [ "$ensure_tried" -eq 0 ]; then
+        # Bus start-on-demand only helps when a bus leg is attached
+        # (pure webhook delivery has no busd to ensure).
+        if [ "$ensure_tried" -eq 0 ] && [ "$notifier" != "webhook" ]; then
           ensure_tried=1
           note "push failed — attempting bus start-on-demand"
           "$FLEET_ROOT/fleet-bus" ensure >>"$FLEET_ROOT/logs/busd.log" 2>&1 || true
