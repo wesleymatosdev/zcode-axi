@@ -39,13 +39,16 @@ while [ ! -f "$status" ]; do
 done
 
 # Follow phase: print only new lines; exit on any attention state.
+# Match on the line with an optional leading ISO timestamp stripped —
+# workers timestamp their entries and the keyword may not be first.
+strip_ts() { printf '%s' "$1" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})? +//'; }
 last=0
 while :; do
   cur="$(wc -l <"$status" | tr -d ' ')"
   if [ "$cur" -gt "$last" ]; then
     sed -n "$((last + 1)),${cur}p" "$status"
     last="$cur"
-    lastline="$(tail -n 1 "$status")"
+    lastline="$(strip_ts "$(tail -n 1 "$status")")"
     case "$lastline" in
       done:* | failed:* | blocked:* | needs-decision:* | ready-for-review:*)
         # Publish to the Telegram topic IMMEDIATELY — the spawning session
