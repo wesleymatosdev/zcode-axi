@@ -6,6 +6,11 @@
 # Appends the terminal status line to fleet/state/<task-id>.status after
 # the coordinator has verified artifacts (commits, tests, reports). A
 # worker NEVER writes its own done — self-report does not close a task.
+#
+# Clean-exit enforcement (2026-09-09): if the task's window is still open
+# after closing, prints a reminder to sweep it — the pubsec-audit gap was
+# a closed task whose window sat on an unanswered dialog for hours because
+# nothing prompted the coordinator to archive it.
 set -euo pipefail
 
 FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -27,3 +32,8 @@ status="$FLEET_ROOT/state/$task_id.status"
 summary="${summary//$'\n'/ }"
 printf '%s: %s\n' "$verdict" "$summary" >>"$status"
 echo "$task_id -> $verdict"
+
+window="fleet-$task_id"
+if tmux list-windows -t zswarm -F '#{window_name}' 2>/dev/null | grep -qx "$window"; then
+  echo "reminder: zswarm:$window is still open — run 'fleet-status --archive' (or fleet-archive) to sweep it; don't leave a closed task's window sitting on an unanswered dialog" >&2
+fi

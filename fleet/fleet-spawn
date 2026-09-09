@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
 # fleet-spawn.sh — spawn a named fleet worker in tmux session `zswarm`.
 #
-# Usage: fleet-spawn.sh [--harness zcode|codex|claude] [--model <id>] <task-id> <brief-file> [cwd]
+# Usage: fleet-spawn.sh [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] <task-id> <brief-file> [cwd]
 #
 # fleet-v2 multi-harness (2026-09-09):
-#   zcode  (default) — interactive TUI, --mode yolo, brief delivered via
-#           send-keys after the Flash footer appears. Free lane.
+#   zcode       (default) — interactive TUI, --mode yolo, brief delivered
+#           via send-keys after the Flash footer appears. Free lane.
+#   zcode-auto  — interactive TUI on the patched auto-permissions build
+#           (`~/.local/bin/zcode-auto`, ZCODE_CLIENT_MODE=auto): classifier
+#           overlay answers covered prompts, human dialog for the rest —
+#           replaces --mode yolo for this harness. Same send-keys delivery
+#           as zcode. Outside the Flash free window this is the default
+#           worker per the harness law (fleet skill).
+#   claude-code / codex-tui — interactive TUI (`claude` / `codex`, no `-p`/
+#           `exec`), same send-keys-after-settle delivery pattern as zcode
+#           (mechanics proven live in zswarm:fleet-pubsec-audit-claude:
+#           tmux new-window -c <cwd> '<engine>', settle sleep, send-keys,
+#           Enter). Use when the ZCode window is busy/out of its free
+#           window and off-window default per the harness law.
 #   codex / claude   — one-shot exec in the window (visible output, exits
 #           when done): `codex exec --sandbox workspace-write` /
 #           `claude -p --model <id>`. Prompt = the same short pointer to the
-#           brief file, so briefs stay harness-uniform. For when the ZCode
-#           window is busy/out of its free window and metered headroom
-#           exists — the COORDINATOR picks the harness (routing law in the
-#           fleet skill); the script never falls back silently on its own.
+#           brief file, so briefs stay harness-uniform. One-shot sandboxes
+#           may not reach fleet/state/ (see the pointer's fallback note
+#           below) and lose steerability — prefer the *-tui variants when
+#           available; the COORDINATOR picks the harness (routing law in
+#           the fleet skill), the script never falls back silently.
 #
 # Window law: never kill/rename windows we did not create. Open status file
 # for a task id = refused (fresh id for retries). remain-on-exit + pinned
@@ -32,7 +45,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-usage() { echo "usage: $0 [--harness zcode|codex|claude|ollama] [--model <id>] <task-id> <brief-file> [cwd]" >&2; exit 1; }
+usage() { echo "usage: $0 [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] <task-id> <brief-file> [cwd]" >&2; exit 1; }
 
 [ $# -ge 2 ] && [ $# -le 3 ] || usage
 task_id="$1"
@@ -46,8 +59,8 @@ case "$task_id" in
     ;;
 esac
 case "$harness" in
-  zcode|codex|claude|ollama) ;;
-  *) echo "fleet-spawn: harness must be zcode|codex|claude|ollama: $harness" >&2; exit 1 ;;
+  zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama) ;;
+  *) echo "fleet-spawn: harness must be zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama: $harness" >&2; exit 1 ;;
 esac
 [ -f "$brief" ] || { echo "fleet-spawn: brief not found: $brief" >&2; exit 1; }
 [ -d "$cwd" ] || { echo "fleet-spawn: cwd not found: $cwd" >&2; exit 1; }
@@ -55,11 +68,14 @@ command -v tmux >/dev/null || { echo "fleet-spawn: tmux not on PATH" >&2; exit 1
 
 # Resolve binaries explicitly: non-interactive shells lack ~/.local/bin, and
 # the fleet must never silently fall back to a different binary on PATH.
+# claude-code/codex-tui reuse the same binaries as the one-shot claude/codex
+# harnesses (only the invocation differs) — one bin var per engine family.
 BIN_DIR="$HOME/.local/bin"
 case "$harness" in
-  zcode)  ENGINE="${ZCODE_BIN:-$BIN_DIR/zcode}";  [ -x "$ENGINE" ] || { echo "fleet-spawn: zcode not found at $ENGINE" >&2; exit 1; } ;;
-  codex)  ENGINE="${CODEX_BIN:-$BIN_DIR/codex}";  [ -x "$ENGINE" ] || { echo "fleet-spawn: codex not found at $ENGINE" >&2; exit 1; } ;;
-  claude) ENGINE="${CLAUDE_BIN:-$BIN_DIR/claude}"; [ -x "$ENGINE" ] || { echo "fleet-spawn: claude not found at $ENGINE" >&2; exit 1; } ;;
+  zcode)      ENGINE="${ZCODE_BIN:-$BIN_DIR/zcode}";      [ -x "$ENGINE" ] || { echo "fleet-spawn: zcode not found at $ENGINE" >&2; exit 1; } ;;
+  zcode-auto) ENGINE="${ZCODE_AUTO_BIN:-$BIN_DIR/zcode-auto}"; [ -x "$ENGINE" ] || { echo "fleet-spawn: zcode-auto not found at $ENGINE" >&2; exit 1; } ;;
+  codex|codex-tui)   ENGINE="${CODEX_BIN:-$BIN_DIR/codex}";  [ -x "$ENGINE" ] || { echo "fleet-spawn: codex not found at $ENGINE" >&2; exit 1; } ;;
+  claude|claude-code) ENGINE="${CLAUDE_BIN:-$BIN_DIR/claude}"; [ -x "$ENGINE" ] || { echo "fleet-spawn: claude not found at $ENGINE" >&2; exit 1; } ;;
   ollama) ENGINE="${OLLAMA_BIN:-ollama}"; command -v "$ENGINE" >/dev/null 2>&1 || { echo "fleet-spawn: ollama not found on PATH" >&2; exit 1; } ;;
 esac
 
@@ -80,8 +96,11 @@ if [ -f "$status" ]; then
     done:* | failed:*) ;;  # archived task id reused: truncate to fresh file
     *) echo "fleet-spawn: task $task_id still open (last: $last); use a fresh id" >&2; exit 1 ;;
   esac
-  : >"$status"
 fi
+# Pre-create the status file BEFORE the worker process launches (below): a
+# sandboxed one-shot harness may only be able to append to a path that
+# already exists, not create one — see the pointer's fallback note.
+: >"$status"
 : >"$log"
 
 # Session zswarm: create only if missing. Other sessions/windows untouched.
@@ -90,8 +109,20 @@ tmux has-session -t zswarm 2>/dev/null || tmux new-session -d -s zswarm -x 220 -
 # Single-quote a string for safe embedding in the pane's sh command line.
 esc() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
-# The brief pointer: identical for every harness — briefs are files, agents read them.
-pointer="Read $brief_abs and do what it says. Progress: append one-line 'working:'/'blocked:'/'needs-decision:' entries to $status. Finish: append one line starting 'ready-for-review:'. Never write done: or failed: yourself — the coordinator closes tasks."
+# The brief pointer: same core contract for every harness — briefs are
+# files, agents read them. One-shot harnesses (codex/claude/ollama) run
+# inside the engine's own sandbox, which may not reach fleet/state/ (the
+# pubsec-audit death: sandbox couldn't see the fleet state dir) — those get
+# an extra fallback clause. Interactive TUI harnesses (zcode/zcode-auto/
+# claude-code/codex-tui) run in a plain tmux pane with no extra sandbox, so
+# this is moot for them.
+fallback_note=""
+case "$harness" in
+  codex|claude|ollama)
+    fallback_note=" If $status is not writable from your sandbox, append status lines to $cwd_abs/.fleet-status instead — fleet-watch reads that path as a fallback."
+    ;;
+esac
+pointer="Read $brief_abs and do what it says. Progress: append one-line 'working:'/'blocked:'/'needs-decision:' entries to $status.${fallback_note} Finish: append one line starting 'ready-for-review:'. Never write done: or failed: yourself — the coordinator closes tasks."
 
 # Prose NEVER goes through the pane command line (quoting a paragraph through
 # sh -c is how the first claude probe died). Pointer goes to a file; the pane
@@ -107,6 +138,27 @@ case "$harness" in
     # correctness comes from the evidence gate, not per-command prompts.
     tmux new-window -d -t zswarm -n "$window" \
       "cd $(esc "$cwd_abs") && $(esc "$ENGINE") --mode yolo"
+    ;;
+  zcode-auto)
+    # Patched auto-permissions build: the classifier overlay replaces
+    # --mode yolo. The wrapper itself defaults ZCODE_CLIENT_MODE=auto, but
+    # set it explicitly here too so the launch command self-documents the
+    # contract (and so an overridden env doesn't silently change it).
+    tmux new-window -d -t zswarm -n "$window" \
+      "cd $(esc "$cwd_abs") && env ZCODE_CLIENT_MODE=auto $(esc "$ENGINE")"
+    ;;
+  claude-code)
+    # Interactive TUI (no -p): same window shape as one-shot claude, minus
+    # the exec/tee wrapper — brief goes via send-keys after a settle sleep,
+    # not argv. See the readiness/delivery case below.
+    mflag=""
+    [ -n "$model" ] && mflag="--model $(esc "$model")"
+    tmux new-window -d -t zswarm -n "$window" \
+      "cd $(esc "$cwd_abs") && $(esc "$ENGINE") $mflag"
+    ;;
+  codex-tui)
+    tmux new-window -d -t zswarm -n "$window" \
+      "cd $(esc "$cwd_abs") && $(esc "$ENGINE")"
     ;;
   codex)
     tmux new-window -d -t zswarm -n "$window" \
@@ -136,16 +188,25 @@ tmux set-option -t "zswarm:$window" automatic-rename off >/dev/null
 tmux pipe-pane -t "zswarm:$window" "cat >> $(esc "$log")"
 
 # Resolve the engine pid: pane shell's child matching the harness binary.
+# Match by engine FAMILY, not the harness flag verbatim — zcode-auto execs
+# into a `node .../zcode.js` process (no "zcode-auto" substring survives
+# the exec), and claude-code/codex-tui share their one-shot sibling's binary.
+case "$harness" in
+  zcode|zcode-auto)    pid_pattern="zcode" ;;
+  claude|claude-code)  pid_pattern="claude" ;;
+  codex|codex-tui)     pid_pattern="codex" ;;
+  ollama)              pid_pattern="ollama" ;;
+esac
 pane_pid="$(tmux list-panes -t "zswarm:$window" -F '#{pane_pid}' 2>/dev/null | head -n 1)"
 zpid="unknown"
 if [ -n "$pane_pid" ]; then
   for _ in $(seq 1 40); do
-    if ps -o command= -p "$pane_pid" 2>/dev/null | grep -qi "$harness"; then
+    if ps -o command= -p "$pane_pid" 2>/dev/null | grep -qi "$pid_pattern"; then
       zpid="$pane_pid"
       break
     fi
     for child in $(pgrep -P "$pane_pid" 2>/dev/null || true); do
-      if ps -o command= -p "$child" 2>/dev/null | grep -qi "$harness"; then
+      if ps -o command= -p "$child" 2>/dev/null | grep -qi "$pid_pattern"; then
         zpid="$child"
         break
       fi
@@ -161,8 +222,9 @@ printf 'spawned: %s harness=%s model=%s brief=%s cwd=%s pid=%s\n' \
 
 ready=no
 case "$harness" in
-  zcode)
-    # Readiness: wait for the TUI model footer (GLM-5.3-Flash) in the pane.
+  zcode|zcode-auto)
+    # Readiness: wait for the TUI model footer (GLM-5.3-Flash) in the pane
+    # — same footer for both, zcode-auto is the same TUI on a patched build.
     for _ in $(seq 1 60); do
       if tmux capture-pane -p -t "zswarm:$window" 2>/dev/null | grep -q "GLM-5.3-Flash"; then
         ready=yes
@@ -171,6 +233,24 @@ case "$harness" in
       sleep 0.5
     done
     # Deliver the brief pointer: send-keys -l, then Enter as a separate call.
+    tmux send-keys -t "zswarm:$window" -l "$pointer"
+    tmux send-keys -t "zswarm:$window" Enter
+    delivery="unverified"
+    for _ in $(seq 1 20); do
+      if tmux capture-pane -p -t "zswarm:$window" -S -200 2>/dev/null | grep -qF "$(basename "$brief_abs")"; then
+        delivery="send-keys"
+        break
+      fi
+      sleep 0.5
+    done
+    ;;
+  claude-code|codex-tui)
+    # No model-footer equivalent to grep for on these TUIs; readiness is a
+    # fixed settle sleep, the mechanics proven live in
+    # zswarm:fleet-pubsec-audit-claude (new-window, sleep ~6, send-keys,
+    # Enter) — the TUI needs a beat to finish drawing before it takes input.
+    sleep 6
+    ready=yes
     tmux send-keys -t "zswarm:$window" -l "$pointer"
     tmux send-keys -t "zswarm:$window" Enter
     delivery="unverified"
@@ -200,6 +280,16 @@ printf 'dispatched: %s ready=%s mode=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$re
 echo "spawned zswarm:$window harness=$harness model=${model:-default} pid=$zpid ready=$ready delivery=$delivery"
 echo "status=$status"
 echo "log=$log"
+# Sandbox-write documentation (2026-09-09): tell the coordinator which path
+# this worker can reach for status writes, per the pointer's fallback clause.
+case "$harness" in
+  zcode|zcode-auto|claude-code|codex-tui)
+    echo "sandbox: interactive TUI in a plain tmux pane, no extra sandbox — writes $status directly; fallback unused"
+    ;;
+  codex|claude|ollama)
+    echo "sandbox: one-shot worker runs inside the engine's own sandbox; primary path is $status, fallback is $cwd_abs/.fleet-status (fleet-watch bridges it back)"
+    ;;
+esac
 if [ "$delivery" = "unverified" ] || [ "$ready" = "no" ]; then
   echo "fleet-spawn: WARNING — delivery/readiness not confirmed; inspect zswarm:$window (zcode lane unhealthy => coordinator may re-dispatch on another harness per routing law)" >&2
   exit 2

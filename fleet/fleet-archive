@@ -15,6 +15,14 @@
 #   task's context lives in the status file + report; the coordinator can
 #   re-spawn to resume. The pane's scrollback is already tee'd to logs/.
 # - Never touches the bare zswarm root window or non-fleet windows.
+#
+# Clean-exit enforcement (2026-09-09, the pubsec-audit gap): every live
+# `fleet-*` window's pane is also scanned for an unanswered dialog
+# (heuristic: a `❯` prompt plus a confirm/consent marker) and FLAGGED —
+# never auto-killed, since killing would discard the pending question. A
+# worker stuck on a dialog looks alive (pid running, no attention line)
+# but nobody is driving it; the pubsec-audit Claude window sat on an
+# unanswered "Teach auto mode?" dialog for hours before this existed.
 set -euo pipefail
 
 FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -57,6 +65,16 @@ for sf in "$state"/*.status; do
       printf 'archived: window killed (attention %sm ago)\n' "$age" >>"$sf"
       echo "archived: $window (attention ${age}m ago)"
     fi
+  fi
+done
+
+# Dialog scan: every live fleet-* window, regardless of status-file state
+# (a stuck dialog can happen before any status line is even written).
+for w in $(tmux list-windows -t zswarm -F '#{window_name}' 2>/dev/null | grep -E '^fleet-'); do
+  pane_text="$(tmux capture-pane -p -t "zswarm:$w" -S -50 2>/dev/null || true)"
+  if printf '%s' "$pane_text" | grep -qF '❯' \
+    && printf '%s' "$pane_text" | grep -qiE 'enter to confirm|press enter to|\(y/n\)'; then
+    echo "DIALOG-PENDING $w — pane shows an unanswered prompt; needs a human, not archivable"
   fi
 done
 exit 0
