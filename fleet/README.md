@@ -1,104 +1,97 @@
-# fleet — firstmate-style visible ZCode crewmates + the Hermes→ZCode connector
+# fleet — v2: Hermes-coordinated ZCode TUI workers
 
-Hermes dispatch routed through ZCode (`zcode -p`, free Flash lane) with
-firstmate's proven visibility pattern: named tmux windows (watchable),
-append-only status files, wait-then-follow watchers, and completion gated on
-evidence — never self-report. All scripts are bash, `set -euo pipefail`,
-and live in this directory; all fleet state lives under `fleet/` inside this
-repo. Nothing under `~/.zcode` is ever written.
+fleet-v2 (RFC: `~/projects/personal/swarm/RFC-fleet-v2.md`, ratified 2026-09-08).
+Hermes (the long-running Telegram/desktop session Wesley talks to) is the sole
+coordinator. Workers are visible ZCode TUI instances in named tmux windows on
+the free GLM-5.3-Flash lane. firstmate stays installed as a toolbox only (no
+captain). Quality loops run in the worker lane too: the adversarial reviewer
+is a second ZCode worker on the first one's diff.
 
 ## Scripts
 
 | Script | Purpose |
 |---|---|
-| `zc-spawn.sh <task-id> <brief-file> [cwd]` | spawn a named tmux window `fleet-<task-id>` in session `zswarm` running `zcode -p "$(cat <brief-file>)"`, output tee'd to `fleet/logs/<task-id>.log`; returns immediately |
-| `zc-watch.sh <task-id>` | wait-then-follow watcher: waits for the status file to exist, prints each new line as it lands, exits when the LAST line is terminal |
-| `zc-status.sh [task-id]` | dashboard feed: `id`, last status line, log byte size, zcode process alive (yes/no); no argument = all tasks |
-| `zc-complete.sh <task-id> <done\|failed> <one-line-summary>` | coordinator-only terminal status write, after artifact verification |
+| `zc-spawn.sh <task-id> <brief-file> [cwd]` | spawn named window `fleet-<task-id>` in tmux session `zswarm`: bare `zcode --mode yolo`, wait for the Flash footer (readiness), send-keys the brief pointer, verify delivery; tee via `tmux pipe-pane` to `logs/<task-id>.log` |
+| `zc-watch.sh [--timeout SEC] <task-id>` | wait-then-follow watcher; exits on ANY attention state: `done:` `failed:` `blocked:` `needs-decision:` (exit 2 on timeout = stall) |
+| `zc-status.sh [task-id]` | dashboard feed: id, last status line, log size, worker pid alive |
+| `zc-complete.sh <task-id> <done\|failed> <summary>` | coordinator-only terminal write, after artifact verification |
+| `zc-steer.sh <task-id> <one-line>` | coordinator steering: durable `steered:` line + send-keys pointer (≤300 chars; detail belongs in the brief) |
+| `zc-recover.sh` | watchdog: appends `failed: worker died mid-task` to open tasks whose pid/window is gone |
+| `zc-digest.sh` | deterministic digest for the cron monitor: OPEN (escalations + liveness only), CLOSED (fresh 48h). Progress chatter is invisible by design |
 
-Layout (runtime dirs are gitignored; scripts create them on demand):
+## The loop (how the coordinator dispatches)
 
 ```
-fleet/
-  zc-spawn.sh zc-watch.sh zc-status.sh zc-complete.sh
-  probe-brief.txt        trivial end-to-end probe
-  logs/<task-id>.log     full zcode output (tee'd from the tmux pane)
-  state/<task-id>.status append-only status file (the contract)
+bash fleet/zc-spawn.sh  <id> brief.md <cwd>     # foreground: returns ready/delivery evidence
+bash fleet/zc-watch.sh --timeout 2400 <id>      # BACKGROUND job with exit notification —
+                                                # any attention state re-enters the
+                                                # coordinator on its own; no polling
+# on wake: verify artifacts (report exists, commits, tests), then:
+bash fleet/zc-complete.sh <id> done "<one-line evidence-backed summary>"
 ```
+
+AFK lane: the `fleet-v2 digest supervisor` cron (every 10m) hashes
+`zc-recover.sh && zc-digest.sh` output; a change wakes it to verify and push
+ONE line per task to Telegram ("✅ id: result · evidence"). Identical digest =
+free tick. The Telegram context contract: one dispatch line in, one
+completion line out; everything else stays on disk.
 
 ## Status-line grammar
 
-`fleet/state/<task-id>.status` is append-only. Lines, in the order they may
-appear:
+`fleet/state/<task-id>.status` is append-only:
 
 ```
-spawned: <iso-ts> brief=<path> cwd=<cwd> pid=<zcode-pid>
-working: <what is happening now>
-blocked: <what is blocking, and on whom>
-needs-decision: <the question, and the options>
-done: <one-line evidence-backed summary>
-failed: <one-line reason>
+spawned: <iso-ts> brief=<path> cwd=<cwd> pid=<zcode-pid>     # zc-spawn only
+dispatched: <iso-ts> ready=yes|no mode=send-keys              # zc-spawn only
+working: <what is happening now>                              # worker
+ready-for-review: <one-line: deliverable complete, where>     # worker (watch exits: verify me)
+blocked: <what is blocking, and on whom>                      # worker (escalation)
+needs-decision: <the question, and the options>               # worker (escalation)
+steered: <one-line pointer>                                   # zc-steer only
+done: <one-line evidence-backed summary>                      # coordinator only
+failed: <one-line reason>                                     # coordinator only
 ```
 
-- `done:` / `failed:` are terminal: the watcher exits on them. A terminal
-  line is never written by the worker itself (see the evidence gate).
-- Nonterminal lines (`working:`, `blocked:`, `needs-decision:`, `spawned:`)
-  are never "closed" by later nonterminal lines — the file is a log, not a
-  state machine; only `done:`/`failed:` end the watch.
-
-## Dispatch record shape
-
-The `spawned:` line is written by `zc-spawn.sh` only:
-
-```
-spawned: 2026-09-06T17:20:05Z brief=/abs/path/brief.txt cwd=/abs/cwd pid=4242
-```
-
-`pid` is the spawned zcode process (best-effort; `unknown` if it could not
-be resolved in the bounded post-spawn wait). `zc-status.sh` derives liveness
-from this pid.
-
-Task windows are created with `remain-on-exit on` (scoped to fleet windows
-only): after zcode exits, the pane stays inspectable (`capture-pane`) until
-the coordinator archives the task with
-`tmux kill-window -t zswarm:fleet-<task-id>`. The last log line is always
-the fleet marker `[fleet] zcode exited rc=<n>` with the real pipeline exit
-code.
-
-## Watcher pattern
-
-The Hermes coordinator dispatches as a background job with exit
-notification:
-
-```
-fleet/zc-spawn.sh mytask swarm/briefs/mytask.txt ~/projects/myrepo
-fleet/zc-watch.sh mytask        # background; exit notification re-enters
-                                # the coordinator when the task terminates
-```
-
-`zc-watch.sh` prints each new status line as it lands (so the coordinator
-log carries the task's narrative) and exits 0 the moment the last line is
-`done:`/`failed:`.
+The file is a log, not a state machine: nonterminal lines are never "closed"
+by later nonterminal lines. `done:`/`failed:` end the watch; `blocked:`/
+`needs-decision:` end it too — they re-enter the coordinator as requests for
+help. `ready-for-review:` is the worker's "deliverable complete" signal (the
+success path): the watch exits, the coordinator verifies the artifact and
+closes with `zc-complete.sh`. Without it a finished worker would be
+indistinguishable from a stall.
 
 ## The evidence gate
 
 **A worker's self-report is NOT done.** `done:` is written only by the
-coordinator, via `zc-complete.sh <task-id> done <summary>`, after verifying
-artifacts directly: commits exist in the repo, tests actually ran and pass,
-the report file exists and says what the worker claims. `failed:` likewise
-belongs to the coordinator's verdict, not the worker's mood.
+coordinator, after verifying artifacts directly: the report file exists and
+says what the worker claims, commits exist, tests ran. `failed:` likewise
+belongs to the coordinator's verdict.
 
-## Lane law
+## Laws
 
-This fleet runs on the free Flash lane only. Before and after every
-dispatch, grep the day's zcode log for model strings:
+- **Lane law (Flash only).** Before and after every dispatch:
+  `grep -oE '"model":"[^"]*"' ~/.zcode/cli/log/zcode-$(date +%Y-%m-%d).jsonl | sort | uniq -c`
+  Any non-Flash string attributable to our processes = kill that tree, record
+  an incident. Never let a metered model ride a fleet dispatch.
+- **TUI law.** Workers are the interactive TUI, never `zcode -p` (headless
+  retired; a positional arg parses as a subcommand on zcode 0.16.5 — the TUI
+  takes its brief via send-keys after the footer appears).
+- **yolo law.** Workers launch `--mode yolo`: build-mode turns every status
+  write into an approval dialog, and a worker must never depend on a human
+  clicking Allow. Correctness comes from the evidence gate.
+- **Window law.** Never kill/rename windows you did not create. Fleet windows
+  get `remain-on-exit on` so the finished pane stays inspectable until the
+  coordinator archives it (`tmux kill-window -t zswarm:fleet-<id>`).
+- **Stagger law.** Dispatch 2–3 workers at a time, fresh spawns, scale to
+  zero. Independent, non-conflicting tasks only.
+
+## Layout
 
 ```
-grep -oE '"model"[^,}]*' ~/.zcode/cli/log/zcode-$(date +%Y-%m-%d).jsonl \
-  | sort | uniq -c
+fleet/
+  zc-*.sh  probe-brief.txt
+  logs/<task-id>.log     pane capture (pipe-pane), full worker output
+  state/<task-id>.status append-only status file (the contract)
 ```
 
-Any non-Flash model string attributable to our processes (anything that is
-not a `*Flash*`/`glm-*-flash` variant) = kill that task's process tree
-immediately and record an incident in the coordinator log. Never let a
-metered model silently ride a fleet dispatch.
+Nothing under `~/.zcode` is ever written by these scripts.

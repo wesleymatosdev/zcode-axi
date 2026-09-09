@@ -1,27 +1,44 @@
 #!/usr/bin/env bash
-# zc-watch.sh — firstmate-style wait-then-follow watcher.
+# zc-watch.sh — escalation-aware wait-then-follow watcher (fleet-v2 P1).
 #
-# Usage: zc-watch.sh <task-id>
+# Usage: zc-watch.sh [--timeout SEC] <task-id>
 #
-# Waits for fleet/state/<task-id>.status to exist (dispatch may not have
-# landed yet), then follows it, printing each new line as it lands, and
-# exits when the LAST line is terminal (`done:` or `failed:`). The Hermes
-# coordinator runs this as a background job with exit notification — a
-# completed watch re-enters the coordinator automatically.
+# Waits for fleet/state/<task-id>.status to exist, then follows it, printing
+# each new line as it lands. Exits (0) when the LAST line is any attention
+# state — the terminal pair done:/failed:, OR the escalation pair
+# blocked:/needs-decision:. The coordinator arms this as a background job
+# with exit notification, so a worker asking for help re-enters the
+# coordinator on its own — Wesley never polls.
+#
+# Exit codes: 0 = attention state reached (print triggering line last),
+# 2 = --timeout elapsed with no attention state (stall signal).
 set -euo pipefail
 
 FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-[ $# -eq 1 ] || { echo "usage: $0 <task-id>" >&2; exit 1; }
+timeout_sec=0
+if [ "${1:-}" = "--timeout" ]; then
+  [ $# -eq 3 ] || { echo "usage: $0 [--timeout SEC] <task-id>" >&2; exit 1; }
+  timeout_sec="$2"
+  shift 2
+fi
+[ $# -eq 1 ] || { echo "usage: $0 [--timeout SEC] <task-id>" >&2; exit 1; }
 task_id="$1"
 status="$FLEET_ROOT/state/$task_id.status"
 
-# Wait phase: the status file may not exist yet.
+deadline=0
+[ "$timeout_sec" -gt 0 ] && deadline=$(( $(date +%s) + timeout_sec ))
+
+# Wait phase: the status file may not exist yet (dispatch in flight).
 while [ ! -f "$status" ]; do
+  if [ "$deadline" -ne 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "watch-timeout: $task_id (no status file after ${timeout_sec}s)"
+    exit 2
+  fi
   sleep 0.5
 done
 
-# Follow phase: print only new lines; exit when the last line is terminal.
+# Follow phase: print only new lines; exit on any attention state.
 last=0
 while :; do
   cur="$(wc -l <"$status" | tr -d ' ')"
@@ -30,8 +47,14 @@ while :; do
     last="$cur"
     lastline="$(tail -n 1 "$status")"
     case "$lastline" in
-      done:* | failed:*) exit 0 ;;
+      done:* | failed:* | blocked:* | needs-decision:* | ready-for-review:*)
+        exit 0
+        ;;
     esac
+  fi
+  if [ "$deadline" -ne 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "watch-timeout: $task_id (no attention state after ${timeout_sec}s; last: $(tail -n 1 "$status"))"
+    exit 2
   fi
   sleep 1
 done
