@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-usage() { echo "usage: $0 [--harness zcode|codex|claude] [--model <id>] <task-id> <brief-file> [cwd]" >&2; exit 1; }
+usage() { echo "usage: $0 [--harness zcode|codex|claude|ollama] [--model <id>] <task-id> <brief-file> [cwd]" >&2; exit 1; }
 
 [ $# -ge 2 ] && [ $# -le 3 ] || usage
 task_id="$1"
@@ -46,8 +46,8 @@ case "$task_id" in
     ;;
 esac
 case "$harness" in
-  zcode|codex|claude) ;;
-  *) echo "zc-spawn: harness must be zcode|codex|claude: $harness" >&2; exit 1 ;;
+  zcode|codex|claude|ollama) ;;
+  *) echo "zc-spawn: harness must be zcode|codex|claude|ollama: $harness" >&2; exit 1 ;;
 esac
 [ -f "$brief" ] || { echo "zc-spawn: brief not found: $brief" >&2; exit 1; }
 [ -d "$cwd" ] || { echo "zc-spawn: cwd not found: $cwd" >&2; exit 1; }
@@ -60,6 +60,7 @@ case "$harness" in
   zcode)  ENGINE="${ZCODE_BIN:-$BIN_DIR/zcode}";  [ -x "$ENGINE" ] || { echo "zc-spawn: zcode not found at $ENGINE" >&2; exit 1; } ;;
   codex)  ENGINE="${CODEX_BIN:-$BIN_DIR/codex}";  [ -x "$ENGINE" ] || { echo "zc-spawn: codex not found at $ENGINE" >&2; exit 1; } ;;
   claude) ENGINE="${CLAUDE_BIN:-$BIN_DIR/claude}"; [ -x "$ENGINE" ] || { echo "zc-spawn: claude not found at $ENGINE" >&2; exit 1; } ;;
+  ollama) ENGINE="${OLLAMA_BIN:-ollama}"; command -v "$ENGINE" >/dev/null 2>&1 || { echo "zc-spawn: ollama not found on PATH" >&2; exit 1; } ;;
 esac
 
 brief_abs="$(cd "$(dirname "$brief")" && pwd)/$(basename "$brief")"
@@ -117,6 +118,14 @@ case "$harness" in
     tmux new-window -d -t zswarm -n "$window" \
       "cd $(esc "$cwd_abs") && $(esc "$ENGINE") -p $mflag \"\$(cat $(esc "$pointer_file"))\" 2>&1 | tee -a $(esc "$log"); echo \"[fleet] claude exited rc=\$?\" | tee -a $(esc "$log")"
     ;;
+  ollama)
+    # GLM via Ollama's cloud endpoint (glm-5.3-flash:cloud) — used during the
+    # Z.AI doubled-billing window (2PM–6PM UTC+8): same model family, zero
+    # Z.AI billing. Model defaults to glm-5.3-flash:cloud.
+    omodel="${model:-glm-5.3-flash:cloud}"
+    tmux new-window -d -t zswarm -n "$window" \
+      "cd $(esc "$cwd_abs") && $(esc "$ENGINE") run $omodel \"\$(cat $(esc "$pointer_file"))\" 2>&1 | tee -a $(esc "$log"); echo \"[fleet] ollama exited rc=\$?\" | tee -a $(esc "$log")"
+    ;;
 esac
 tmux set-option -t "zswarm:$window" remain-on-exit on >/dev/null
 # Pin the name: agent TUIs (and tmux automatic-rename) otherwise rename the
@@ -173,7 +182,7 @@ case "$harness" in
       sleep 0.5
     done
     ;;
-  codex|claude)
+  codex|claude|ollama)
     # One-shot: prompt went in via argv. Ready = engine process alive and
     # first pane output landed (bounded). No send-keys involved.
     delivery="argv"
