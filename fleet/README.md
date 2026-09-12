@@ -15,8 +15,9 @@ Renamed from `zc-*.sh` to `fleet-*` (no extension) when multi-harness landed
 
 | Script | Purpose |
 |---|---|
-| `fleet-spawn [--harness zcode\|zcode-auto\|codex\|codex-tui\|claude\|claude-code\|ollama] [--model <id>] [--no-notify] <task-id> <brief-file> [cwd]` | spawn named window `fleet-<task-id>` in tmux session `zswarm` on the chosen harness (TUI via send-keys, one-shot via argv — see the script's own header comment for the full per-harness table), verify readiness/delivery; tee via `tmux pipe-pane` to `logs/<task-id>.log`. By default also starts the push layer: publishes `spawned`/`dispatched` bus events and starts `fleet-notifyd` (below); `--no-notify` opts out |
-| `fleet-wait [--timeout SEC] <task-id>` (also `<task-id> [SEC]`) | the coordinator's wait, **push-first**: arms `fleet-wait-push` (subscribes the task on the bus) and exits with the event payload on ANY attention state: `done:` `failed:` `blocked:` `needs-decision:` `ready-for-review:` (exit 2 on timeout = stall). Wake is a push (<50ms budget; measured sub-1ms–13ms loopback) instead of a 1s scrape. Same stdout contract and exit codes fleet-watch had. **Fallback (never silent):** if the bus is unreachable even after a start-on-demand attempt, or fleet-wait-push is not installed, fleet-wait prints a `FALLBACK` banner on stderr and execs the old `fleet-watch` poll loop — degraded to yesterday's latency, never broken. Also bridges a sandboxed worker's `<cwd>/.fleet-status` fallback lines into the canonical status file |
+| `fleet-spawn [--harness zcode\|zcode-auto\|codex\|codex-tui\|claude\|claude-code\|ollama] [--model <id>] [--no-notify] [--no-delegate] <task-id> <brief-file> [cwd]` | spawn named window `fleet-<task-id>` in tmux session `zswarm` on the chosen harness (TUI via send-keys, one-shot via argv — see the script's own header comment for the full per-harness table), verify readiness/delivery; tee via `tmux pipe-pane` to `logs/<task-id>.log`. By default also starts the push layer: publishes `spawned`/`dispatched` bus events and starts `fleet-notifyd` (below); `--no-notify` opts out. By default also attaches `fleet-approval-delegate` to the new pane (TUI harnesses only — one-shot engines never show dialogs); `--no-delegate` opts out |
+| `fleet-wait [--timeout SEC] <task-id>` (also `<task-id> [SEC]`) | the coordinator's wait, **push-first**: arms `fleet-wait-push` (subscribes the task on the bus) and exits with the event payload on ANY attention state: `done:` `failed:` `blocked:` `needs-decision:` `ready-for-review:` (exit 2 on timeout = stall). Wake is a push (<50ms budget; measured sub-1ms–13ms loopback) instead of a 1s scrape. **Revival on timeout (2026-09-11):** a timeout classifies the pane via `fleet-approval-delegate classify` — an approval dialog is cleared by the delegate and the wait continues (no re-dispatch, capped at 2 revives); a dead pane gets `failed-reason:` with the log tail and ONE auto re-dispatch as `<task-id>-r2` (second failure surfaces to Wesley and stops — no `-r3`); a healthy-but-slow worker just re-arms. While waiting it also lands a `waiting:` heartbeat in the status file every `$FLEET_WAIT_HEARTBEAT_SEC`s (default 1800) so disk reflects liveness. Same stdout contract and exit codes fleet-watch had. **Fallback (never silent):** if the bus is unreachable even after a start-on-demand attempt, or fleet-wait-push is not installed, fleet-wait prints a `FALLBACK` banner on stderr and execs the old `fleet-watch` poll loop — degraded to yesterday's latency, never broken (the fallback keeps pre-revival semantics). Also bridges a sandboxed worker's `<cwd>/.fleet-status` fallback lines into the canonical status file |
+| `fleet-approval-delegate [--interval SEC] [--once] [--policy FILE] <task-id>` (Go, source `fleet-approval-delegate.go`) | the stall killer: polls the worker's tmux pane for permission dialogs ("Do you want to proceed?" / folder-trust). Allowlisted classes from `fleet/approval-policy.txt` (reads under `~/projects/personal/**` or the task cwd, directory-access grants, read-only git/gh/npm, edits to the task's own status file, folder-trust) are auto-answered — pressing the best-scoped option — and audited to `logs/<task-id>.approvals.log` as `approval:auto fp=<fp> class=<name> <prompt-head>`. Everything else (pushes, deletes, `curl`, installs, auth, ANY unmatched prompt — default-deny) answers nothing, appends `needs-decision: pending approval dialog: …` once per distinct dialog, and publishes one fleet-event. Never touches non-prompt output; stands down when the window is archived or the task closes. `--once` is the bounded clear fleet-wait's revival path uses (it stands down if a watcher delegate already owns the pane); `classify <task-id>` prints `approval-dialog <head>` / `dead-pane <evidence>` / `alive-recent <age-s>` / `alive-silent <age-s>` for fleet-wait. Rebuild: `go build -o fleet-approval-delegate fleet-approval-delegate.go` (Go stdlib only) |
 | `fleet-watch [--timeout SEC] <task-id>` | the old poll-loop watcher; kept as fleet-wait's fallback path and for manual use. (2026-09-09: fixed its silent `fleet-event.sh` reference — the rename had left it no-op'ing the Telegram publish) |
 | `fleet-bus status\|ensure\|start\|stop` | busd lifecycle: health-check (`status`), start-on-demand with post-start health check (`ensure` — what fleet-spawn/fleet-wait/fleet-notifyd call), explicit `start`/`stop`. Resolves busd explicitly (`$FLEET_BUSD_BIN` → `~/.local/bin` → fleet-bus repo `bin/`); never a silent PATH fallback |
 | `fleet-notifyd [--notifier nats\|webhook\|multi] <task-id>` | spawn-side notify shim (started by fleet-spawn, not by hand; `--notifier` defaults to `$FLEET_NOTIFIER`, else `nats`): tails `state/<task-id>.status` and pushes every new `working:`/`blocked:`/`needs-decision:`/`ready-for-review:`/`done:`/`failed:` line to the delivery adapter chosen by `--notifier` via `pushevent` — `nats` = the bus (default), `webhook` = signed JSON POST to the Hermes gateway receiver (needs `$FLEET_WEBHOOK_URL` + `$FLEET_WEBHOOK_SECRET`, secret never logged; IDE-agnostic port seam — hermes is just adapter #1), `multi` = fan-out to both — workers never change, briefs never mention the bus. Exits on `done:`/`failed:` (after pushing), archived status file, or swept window; log at `logs/<task-id>.notify.log` |
@@ -114,6 +115,7 @@ completion line out; everything else stays on disk.
 spawned: <iso-ts> brief=<path> cwd=<cwd> pid=<zcode-pid>     # fleet-spawn only
 dispatched: <iso-ts> ready=yes|no mode=send-keys              # fleet-spawn only
 working: <what is happening now>                              # worker
+waiting: <liveness heartbeat — watcher still armed>           # fleet-wait only
 ready-for-review: <one-line: deliverable complete, where>     # worker (watch exits: verify me)
 blocked: <what is blocking, and on whom>                      # worker (escalation)
 needs-decision: <the question, and the options>               # worker (escalation)
@@ -164,6 +166,15 @@ belongs to the coordinator's verdict.
 - **yolo law.** Workers launch `--mode yolo`: build-mode turns every status
   write into an approval dialog, and a worker must never depend on a human
   clicking Allow. Correctness comes from the evidence gate.
+- **Approval law (2026-09-11).** A permission dialog must never sit
+  unanswered — four worker-hours were lost to unseen "Do you want to
+  proceed?" panes before this. TUI workers get a `fleet-approval-delegate`
+  attached at spawn (auto-answers the policy allowlist, escalates
+  everything else once), and fleet-wait's timeout classifies the pane and
+  revives instead of just notifying: dialog → clear + keep waiting; dead
+  pane → `failed-reason:` + one `-r2` re-dispatch; second failure →
+  Wesley. The allowlist is deny-dominant: anything not explicitly allowed
+  escalates.
 - **Window law.** Never kill/rename windows you did not create. Fleet windows
   get `remain-on-exit on` so the finished pane stays inspectable until the
   coordinator archives it (`tmux kill-window -t zswarm:fleet-<id>`).
@@ -186,6 +197,8 @@ fleet/
   fleet-*  probe-brief.txt
   logs/<task-id>.log     pane capture (pipe-pane), full worker output
   logs/<task-id>.notify.log  fleet-notifyd's per-task publish trail
+  logs/<task-id>.approvals.log  fleet-approval-delegate audit trail (auto-answers + escalations)
+  logs/<task-id>.delegate.log   fleet-approval-delegate stdout/stderr
   logs/busd.log          resident broker log (start-on-demand + LaunchAgent)
   state/<task-id>.status append-only status file (the contract)
   <task-cwd>/.fleet-status  sandbox fallback (only when a one-shot harness

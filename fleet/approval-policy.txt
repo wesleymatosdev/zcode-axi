@@ -1,0 +1,82 @@
+# fleet approval policy — what fleet-approval-delegate may auto-answer.
+#
+# Line format (whitespace-separated; blank lines and #-comments ignored):
+#
+#   allow <name> <regex>
+#   deny  <name> <regex>
+#
+# <regex> is a Go RE2 expression matched against the dialog's PROMPT text:
+# the pane region above and including the "Do you want to proceed?" line,
+# joined with single spaces. Option lines are deliberately excluded — a
+# "git push" dialog offering a directory-grant option must classify on the
+# command, not on the option wording. Before matching, these placeholders
+# are replaced with the task's own values (regex-quoted):
+#
+#   {{HOME}}    the user's home directory
+#   {{CWD}}     the task's cwd (from the status file's spawned: line)
+#   {{STATUS}}  the task's status file path
+#
+# Semantics:
+#   deny ALWAYS wins (evaluated first, regardless of file order).
+#   allow — answer YES, pressing the best-scoped numbered option:
+#           "always allow access ..." > "allow reading from ..." >
+#           "don't ask again ..." > plain "Yes". Audited to
+#           logs/<task-id>.approvals.log as `approval:auto class=<name>`.
+#   no match — escalate (default-deny): the delegate only ever answers
+#           what this file explicitly allows.
+#
+# Seeded 2026-09-11 from the observed stall dialogs (ao-zcode-agent2,
+# orca-upstream-zcode2, madeline-proposal-650): read-outside-cwd prompts,
+# directory-access grants, read-only git/gh/npm approvals.
+
+# ---- allow: pre-approved prompt classes ------------------------------------
+
+# File reads inside Wesley's projects tree or the task's own cwd (the
+# "Yes, allow reading from <dir> during this session" option gets pressed).
+allow read-own-tree Read file.*Read\(({{HOME}}/projects/personal/|{{CWD}}/)
+
+# Shell commands touching task-adjacent directories (the observed
+# fleet/state case and anything under the projects tree) — press the
+# "Yes, and always allow access to <dir> from this project" option.
+allow dir-access Run shell command.*({{HOME}}/projects/personal/|{{CWD}}/)
+
+# File edits inside the task's own workspace (cwd) or to its status file —
+# the "Do you want to make this edit to <path>?" dialog. The scoped option
+# ("Yes, and switch to accept edits … for this session") gets pressed,
+# converging a manual-mode session toward the fleet's yolo default.
+allow file-edit make this edit to ({{CWD}}/|{{STATUS}}|{{STATUS_BASE}})
+
+# Read-only git inspection (mutations are denied below).
+allow git-readonly Run shell command.*git (status|log|diff|show|branch|rev-parse|remote -v|describe|ls-files)
+
+# Read-only gh (no `api` — it can mutate; no create/merge/close/auth).
+allow gh-readonly Run shell command.*gh (pr view|pr checks|pr list|pr diff|issue view|issue list|issue status|repo view|run view|run list|release view)
+
+# Read-only npm inspection (no install/ci/run — those execute or mutate).
+allow npm-readonly Run shell command.*npm (list|ls|view|outdated|search)
+
+# Edits to the task's own status file (the pointer contract requires them).
+allow status-write (Edit|Write|Update) file.*{{STATUS}}
+
+# Directory-trust prompt at TUI startup ("Yes, I trust this folder").
+allow trust-folder [Dd]o you trust (the files in )?this folder
+
+# ---- deny: explicit escalation classes (win over any allow) -----------------
+
+# Network mutations / deploys / publishes. (git remote -v stays allowed:
+# only argument-taking remote subcommands deny.)
+deny network-mutating Run shell command.*(git push|git remote (add|remove|set-url|prune|update)|git (reset --hard|clean|filter-branch)|npm (install|ci|publish|add|remove|unlink)|yarn (add|remove|publish)|pnpm (add|install|publish)|pip (install|publish)|cargo (install|publish)|brew (install|upgrade|uninstall)|deploy|flyctl|vercel|netlify|wrangler|gcloud|aws)
+
+# Raw network fetches — esp. `curl | sh` shapes.
+deny raw-fetch Run shell command.*(curl|wget)
+
+# Deletes and destructive git operations — anything rm-shaped.
+deny delete Run shell command.*\brm\b
+deny destructive-git Run shell command.*git (reset --hard|clean|checkout --|restore|filter-branch|rebase|merge)
+
+# gh mutations and anything auth-shaped.
+deny gh-mutating Run shell command.*gh (pr (create|merge|close|edit)|issue (create|close|edit)|repo (create|fork|delete)|release (create|delete)|auth)
+deny auth-shaped (?i)(login|logout|credential|api[ _-]?key|token)
+
+# Package installs beyond the package managers above.
+deny install-cmd (?i)Run shell command.*(apt|apt-get|brew install|gem install|cargo add)

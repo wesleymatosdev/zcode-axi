@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # fleet-spawn.sh — spawn a named fleet worker in tmux session `zswarm`.
 #
-# Usage: fleet-spawn.sh [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] [--no-notify] <task-id> <brief-file> [cwd]
+# Usage: fleet-spawn.sh [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] [--no-notify] [--no-delegate] <task-id> <brief-file> [cwd]
+#
+# Approval delegate (2026-09-11, default ON for TUI harnesses): alongside
+# the notify shim, fleet-spawn starts fleet-approval-delegate on the new
+# pane — it watches for permission dialogs, auto-answers the classes
+# allowlisted in fleet/approval-policy.txt, and escalates everything else
+# (needs-decision: + fleet-event, once per distinct dialog). This kills the
+# observed stall class: workers pausing mid-task on "Do you want to
+# proceed?" with nothing watching. One-shot harnesses (codex/claude/ollama)
+# never show TUI dialogs — no delegate there. --no-delegate opts out;
+# retrofitting an already-running task is `fleet-approval-delegate <id>`.
 #
 # Push notify (fleet-bus integration, 2026-09-09): by default every spawn
 # publishes spawned/dispatched bus events and starts fleet-notifyd, a
@@ -44,18 +54,21 @@ FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
 harness="zcode"
 model=""
 notify=1
+delegate=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --harness) harness="$2"; shift 2 ;;
     --model)   model="$2";   shift 2 ;;
     --notify)  notify=1;     shift ;;
     --no-notify) notify=0;   shift ;;
+    --delegate) delegate=1;   shift ;;
+    --no-delegate) delegate=0; shift ;;
     --harness=*|--model=*) echo "fleet-spawn: use space-separated flags" >&2; exit 1 ;;
     *) break ;;
   esac
 done
 
-usage() { echo "usage: $0 [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] [--no-notify] <task-id> <brief-file> [cwd]" >&2; exit 1; }
+usage() { echo "usage: $0 [--harness zcode|zcode-auto|codex|codex-tui|claude|claude-code|ollama] [--model <id>] [--no-notify] [--no-delegate] <task-id> <brief-file> [cwd]" >&2; exit 1; }
 
 [ $# -ge 2 ] && [ $# -le 3 ] || usage
 task_id="$1"
@@ -158,11 +171,10 @@ case "$harness" in
       "cd $(esc "$cwd_abs") && env ZCODE_CLIENT_MODE=auto $(esc "$ENGINE")"
     ;;
   claude-code)
-    # Interactive TUI (no -p): same window shape as one-shot claude, minus
-    # the exec/tee wrapper — brief goes via send-keys after a settle sleep,
-    # not argv. See the readiness/delivery case below.
-    mflag=""
-    [ -n "$model" ] && mflag="--model $(esc "$model")"
+    # Interactive TUI in automatic permission mode: prevents workers from
+    # hanging on approval prompts while retaining the normal TUI/status path.
+    mflag="--permission-mode auto"
+    [ -n "$model" ] && mflag="$mflag --model $(esc "$model")"
     tmux new-window -d -t zswarm -n "$window" \
       "cd $(esc "$cwd_abs") && $(esc "$ENGINE") $mflag"
     ;;
@@ -196,6 +208,29 @@ tmux set-option -t "zswarm:$window" automatic-rename off >/dev/null
 # Fleet log: tmux-side capture keeps TUIs on a real PTY (zcode); one-shot
 # harnesses tee their own output too — capture adds pane-side evidence.
 tmux pipe-pane -t "zswarm:$window" "cat >> $(esc "$log")"
+
+# Approval delegate (default ON, TUI harnesses only): attached BEFORE the
+# brief is delivered so even startup dialogs (folder-trust) are covered.
+# Best-effort by law — a missing/broken delegate degrades to the old
+# watch-timeout revival, never fails the spawn.
+delegate_pid=""
+if [ "$delegate" = "1" ]; then
+  case "$harness" in
+    zcode|zcode-auto|claude-code|codex-tui)
+      if [ -x "$FLEET_ROOT/fleet-approval-delegate" ]; then
+        nohup "$FLEET_ROOT/fleet-approval-delegate" "$task_id" >>"$FLEET_ROOT/logs/$task_id.delegate.log" 2>&1 &
+        delegate_pid=$!
+        disown 2>/dev/null || true
+        echo "delegate: approval-delegate pid=$delegate_pid log=$FLEET_ROOT/logs/$task_id.delegate.log"
+      else
+        echo "delegate: fleet-approval-delegate not installed — skipping (watcher revival still covers stalls)" >&2
+      fi
+      ;;
+    *)
+      echo "delegate: not applicable to one-shot harness $harness (no TUI dialogs)"
+      ;;
+  esac
+fi
 
 # Resolve the engine pid: pane shell's child matching the harness binary.
 # Match by engine FAMILY, not the harness flag verbatim — zcode-auto execs

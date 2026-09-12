@@ -12,11 +12,24 @@
 # on loopback) instead of a 1s status-file scrape, so a worker asking for
 # help re-enters the coordinator on its own — Wesley never polls.
 #
+# Revival on timeout (2026-09-11): rc=2 no longer just escalates. The pane
+# is classified via fleet-approval-delegate classify: an approval dialog is
+# cleared by the delegate and the wait continues (capped); a dead pane gets
+# failed-reason: + ONE auto re-dispatch as <task-id>-r2 (second failure
+# surfaces to Wesley and stops); a healthy-but-slow worker just re-arms the
+# wait. See the revival block below for the full ladder.
+#
+# Liveness heartbeat (2026-09-11): while waiting, a `waiting:` line lands in
+# the status file every $FLEET_WAIT_HEARTBEAT_SEC seconds (default 1800) so
+# disk reflects liveness even when the worker itself is silent.
+#
 # Fallback (documented, NEVER silent): if busd is unreachable even after a
 # start-on-demand attempt (fleet-bus ensure), or fleet-wait-push is not
 # installed, fleet-wait says so on stderr and execs the old fleet-watch
-# poll loop — degraded to yesterday's latency, never broken. Either way the
-# status file remains the durable record; push is notification only.
+# poll loop — degraded to yesterday's latency, never broken (the revival
+# path is push-side only; the fallback keeps the pre-revival semantics).
+# Either way the status file remains the durable record; push is
+# notification only.
 #
 # Keeps fleet-watch's sandbox-fallback bridge: while the wait runs, a
 # one-shot worker's <cwd>/.fleet-status lines are bridged into the
@@ -64,8 +77,36 @@ if [ -n "$fallback" ]; then
   ) &
   bridge_pid=$!
 fi
-cleanup() { if [ -n "$bridge_pid" ]; then kill "$bridge_pid" 2>/dev/null || true; fi; }
+cleanup() {
+  if [ -n "$bridge_pid" ]; then kill "$bridge_pid" 2>/dev/null || true; fi
+  if [ -n "$hb_pid" ]; then kill "$hb_pid" 2>/dev/null || true; fi
+}
 trap cleanup EXIT
+
+# Liveness heartbeat (2026-09-11, the blind-heartbeat fix): a worker can sit
+# unchanged on the disk for hours — cruising, paused on a dialog, whatever —
+# and stall-vs-cruising is indistinguishable from the status file alone.
+# While this wait runs, refresh the file with a `waiting:` line every ~30min
+# so disk reflects liveness. Never written when the last line is already an
+# attention state (the watcher exits on that line, and fleet-archive ages
+# tasks by status mtime — painting over it would break the sweep). Notifyd
+# skips `waiting:` (non-bus keyword) and digest counts it as liveness, so
+# the heartbeat costs nothing downstream.
+hb="${FLEET_WAIT_HEARTBEAT_SEC:-1800}"
+hb_pid=""
+if [ "$hb" -gt 0 ]; then
+  (
+    while sleep "$hb"; do
+      [ -f "$status" ] || exit 0
+      hb_last="$(tail -n 1 "$status" 2>/dev/null)"
+      case "$hb_last" in
+        done:* | failed:* | blocked:* | needs-decision:* | ready-for-review:*) exit 0 ;;
+      esac
+      printf 'waiting: %s watcher heartbeat task=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$task_id" >>"$status"
+    done
+  ) &
+  hb_pid=$!
+fi
 
 # Match on the line with an optional leading ISO timestamp stripped —
 # workers timestamp their entries and the keyword may not be first.
@@ -74,6 +115,7 @@ strip_ts() { printf '%s' "$1" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2
 poll_fallback() {
   echo "fleet-wait: FALLBACK — $1" >&2
   echo "fleet-wait: push layer degraded, using the fleet-watch poll loop; the status file remains the record" >&2
+  cleanup  # exec replaces this process: kill the bridge/heartbeat children first
   if [ "$timeout_sec" -gt 0 ]; then
     exec "$FLEET_ROOT/fleet-watch" --timeout "$timeout_sec" "$task_id"
   else
@@ -92,34 +134,128 @@ for cand in "${FLEET_WAITPUSH_BIN:-}" "$HOME/.local/bin/fleet-wait-push" "$HOME/
 done
 [ -n "$waitpush" ] || poll_fallback "fleet-wait-push binary not found (\$FLEET_WAITPUSH_BIN, ~/.local/bin, ~/projects/personal/fleet-bus/bin)"
 
-outfile="$(mktemp "${TMPDIR:-/tmp}/fleet-wait.$task_id.XXXXXX")"
-if [ "$timeout_sec" -gt 0 ]; then
-  set +e
-  "$waitpush" --state-dir "$FLEET_ROOT/state" -timeout "$timeout_sec" "$task_id" | tee "$outfile"
-  rc="${PIPESTATUS[0]}"
-  set -e
-else
-  set +e
-  "$waitpush" --state-dir "$FLEET_ROOT/state" "$task_id" | tee "$outfile"
-  rc="${PIPESTATUS[0]}"
-  set -e
-fi
+# The classifier/clearer for the revival path. Missing binary (pre-delegate
+# install) degrades to the old stall behavior — never blocks the wait.
+delegate_bin="$FLEET_ROOT/fleet-approval-delegate"
+[ -x "$delegate_bin" ] || delegate_bin=""
 
-# Publish to the Telegram topic on attention/stall — same as fleet-watch:
-# the spawning session may be mid-turn; the event must not wait for it.
-# Best-effort: never block the exit.
-lastline="$(strip_ts "$(tail -n 1 "$outfile" 2>/dev/null || true)")"
-case "$rc" in
-  0)
-    if [ -n "$lastline" ]; then
-      "$FLEET_ROOT/fleet-event" "$task_id" "${lastline%%:*}" "${lastline#*: }" >/dev/null 2>&1 || true
-    fi
-    ;;
-  2)
+# Revival path (2026-09-11): a timeout with NO attention state is usually a
+# paused worker, not a lost cause — the observed stall class is a permission
+# dialog the pane never surfaced anywhere. On rc=2, classify the pane via
+# fleet-approval-delegate and act on the class:
+#   approval-dialog → delegate clears it, CONTINUE waiting (no re-dispatch,
+#                     no lost context; capped at 2 consecutive dialog
+#                     revivals, then behave like the old stall),
+#   dead-pane       → failed-reason: with the log tail, then ONE auto
+#                     re-dispatch (same brief, fresh id suffix -r2); waiting
+#                     on an -r2 id already means second failure → surface to
+#                     Wesley and stop (existing law),
+#   alive-recent    → worker is genuinely producing output (pipe-pane log
+#                     fresh): re-arm, a long healthy task is not a stall,
+#   anything else   → the old behavior: needs-decision event + exit 2.
+# The push layer stays primary: every re-arm re-runs fleet-wait-push, so
+# wake latency is unchanged.
+dialog_revives=0
+while :; do
+  outfile="$(mktemp "${TMPDIR:-/tmp}/fleet-wait.$task_id.XXXXXX")"
+  if [ "$timeout_sec" -gt 0 ]; then
+    set +e
+    "$waitpush" --state-dir "$FLEET_ROOT/state" -timeout "$timeout_sec" "$task_id" | tee "$outfile"
+    rc="${PIPESTATUS[0]}"
+    set -e
+  else
+    set +e
+    "$waitpush" --state-dir "$FLEET_ROOT/state" "$task_id" | tee "$outfile"
+    rc="${PIPESTATUS[0]}"
+    set -e
+  fi
+
+  # Publish to the Telegram topic on attention — same as fleet-watch: the
+  # spawning session may be mid-turn; the event must not wait for it.
+  # Best-effort: never block the exit.
+  lastline="$(strip_ts "$(tail -n 1 "$outfile" 2>/dev/null || true)")"
+  if [ "$rc" = "0" ] && [ -n "$lastline" ]; then
+    "$FLEET_ROOT/fleet-event" "$task_id" "${lastline%%:*}" "${lastline#*: }" >/dev/null 2>&1 || true
+  fi
+  rm -f "$outfile"
+
+  if [ "$rc" != "2" ]; then
+    exit "$rc"
+  fi
+
+  # Stall: classify before escalating. No delegate installed ⇒ old behavior.
+  stall_last="$(tail -n 1 "$status" 2>/dev/null || echo '?')"
+  stall_escalate() {
     "$FLEET_ROOT/fleet-event" "$task_id" "needs-decision" \
-      "watcher stall: no attention state after ${timeout_sec}s (last: $(tail -n 1 "$status" 2>/dev/null || echo '?'))" \
+      "watcher stall: no attention state after ${timeout_sec}s (last: $stall_last; classified: $1)" \
       >/dev/null 2>&1 || true
-    ;;
-esac
-rm -f "$outfile"
-exit "$rc"
+    echo "watch-timeout: $task_id (no attention state after ${timeout_sec}s; last: $stall_last)"
+    exit 2
+  }
+  if [ -z "$delegate_bin" ]; then
+    stall_escalate "revival unavailable (fleet-approval-delegate not installed)"
+  fi
+  cls="$("$delegate_bin" classify "$task_id" 2>/dev/null || echo classify-failed)"
+  case "$cls" in
+    approval-dialog*)
+      if [ "$dialog_revives" -lt "${FLEET_WAIT_DIALOG_REVIVES:-2}" ]; then
+        dialog_revives=$((dialog_revives + 1))
+        echo "fleet-wait: approval dialog detected on $task_id — delegate clearing, continuing to wait (revive $dialog_revives): $cls" >&2
+        "$delegate_bin" --once "$task_id" >/dev/null 2>&1 || true
+        continue  # re-arm with a full fresh timeout
+      fi
+      stall_escalate "$cls (revive limit reached)"
+      ;;
+    dead-pane*)
+      case "$task_id" in
+        *-r2)
+          # Second failure: surface to Wesley and stop (existing law).
+          printf 'failed-reason: worker died mid-task again after re-dispatch (classified: %s)\n' "$cls" >>"$status"
+          "$FLEET_ROOT/fleet-event" "$task_id" "needs-decision" \
+            "second failure: re-dispatched worker $task_id died too (classified: $cls); NOT re-dispatching again" \
+            >/dev/null 2>&1 || true
+          echo "fleet-wait: $task_id died after re-dispatch — second failure, surfacing and stopping" >&2
+          exit 2
+          ;;
+        *)
+          spawned_line="$(grep -E '^spawned: ' "$status" 2>/dev/null | tail -n 1)"
+          rbrief="$(printf '%s' "$spawned_line" | sed -n 's/.* brief=\([^ ]*\) cwd=.*/\1/p')"
+          rcwd="$(printf '%s' "$spawned_line" | sed -n 's/.* cwd=\([^ ]*\) pid=.*/\1/p')"
+          rharness="$(printf '%s' "$spawned_line" | sed -n 's/.* harness=\([^ ]*\) .*/\1/p')"
+          rmodel="$(printf '%s' "$spawned_line" | sed -n 's/.* model=\([^ ]*\) brief=.*/\1/p')"
+          if [ -z "$rbrief" ] || [ ! -f "$rbrief" ] || [ -z "$rcwd" ]; then
+            stall_escalate "$cls (cannot re-dispatch: brief/cwd unparseable from spawned: line)"
+          fi
+          # failed-reason: is REQUIRED on disk before any auto re-dispatch.
+          # The pane log is raw TUI output — strip escape sequences so the
+          # status line stays human-readable.
+          log_tail="$(tail -n 5 "$FLEET_ROOT/logs/$task_id.log" 2>/dev/null | tr '\n' ' ' | sed -E 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07]*(\x07|\x1b\\)//g; s/\x1b[()][0-9A-B]//g' | tr -s ' ' | cut -c1-240)"
+          printf 'failed-reason: worker died mid-task (classified: %s); log tail: %s\n' "$cls" "$log_tail" >>"$status"
+          new_id="${task_id}-r2"
+          echo "fleet-wait: $task_id dead ($cls) — re-dispatching once as $new_id (brief: $(basename "$rbrief"))" >&2
+          spawn_flags=()
+          [ -n "$rharness" ] && spawn_flags+=(--harness "$rharness") || true
+          [ -n "$rmodel" ] && [ "$rmodel" != "default" ] && spawn_flags+=(--model "$rmodel") || true
+          if ! "$FLEET_ROOT/fleet-spawn" "${spawn_flags[@]+"${spawn_flags[@]}"}" "$new_id" "$rbrief" "$rcwd" >/dev/null 2>&1; then
+            "$FLEET_ROOT/fleet-event" "$task_id" "needs-decision" \
+              "re-dispatch of $new_id failed (fleet-spawn rc != 0); manual attention needed" \
+              >/dev/null 2>&1 || true
+            echo "fleet-wait: re-dispatch $new_id failed — surfacing" >&2
+            exit 2
+          fi
+          cleanup  # exec replaces this process: kill the bridge/heartbeat children first
+          exec "$FLEET_ROOT/fleet-wait" --timeout "$timeout_sec" "$new_id"
+          ;;
+      esac
+      ;;
+    alive-recent*)
+      # Genuinely running, just not done: pipe-pane log activity is fresh.
+      # Re-arm without cap — a long healthy task is not a stall, and the
+      # waiting: heartbeat keeps disk honest meanwhile.
+      continue
+      ;;
+    *)
+      stall_escalate "$cls"
+      ;;
+  esac
+done
