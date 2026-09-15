@@ -1,0 +1,67 @@
+#!/bin/bash
+set -euo pipefail
+
+FLEET_ROOT="$(cd "$(dirname "$0")" && pwd)"
+STATE_DIR="$FLEET_ROOT/state"
+SESSION="${FLEET_TMUX_SESSION:-zswarm}"
+PARK_SESSION="${FLEET_IDLE_SESSION:-zswarm-idle}"
+APPLY=0
+
+case "${1:-}" in
+  --apply|--park) APPLY=1 ;;
+  ""|--dry-run) ;;
+  *) printf 'usage: %s [--dry-run|--apply]\n' "$0" >&2; exit 2 ;;
+esac
+
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  printf 'source session not found: %s\n' "$SESSION"
+  exit 0
+fi
+
+# Snapshot stable tmux window IDs. Numeric indexes are deliberately ignored.
+SNAPSHOT="$(tmux list-windows -t "$SESSION" -F '#{window_id}\t#{window_name}')"
+
+if [ "$APPLY" -eq 1 ] && ! tmux has-session -t "$PARK_SESSION" 2>/dev/null; then
+  tmux new-session -d -s "$PARK_SESSION" -n idle-archive
+  printf 'created parking session: %s\n' "$PARK_SESSION"
+fi
+
+parked=0
+kept=0
+while IFS= read -r entry; do
+  [ -n "$entry" ] || continue
+  window_id="${entry%%$'\t'*}"
+  snapshot_name="${entry#*$'\t'}"
+
+  # Revalidate identity before any mutation; the window may have changed or gone.
+  current="$(tmux display-message -p -t "$SESSION:$window_id" '#{window_id}\t#{window_name}' 2>/dev/null || true)"
+  [ "$current" = "$entry" ] || { kept=$((kept + 1)); continue; }
+
+  task="${snapshot_name#fleet-}"
+  status_file="$STATE_DIR/$task.status"
+  [ -f "$status_file" ] || { kept=$((kept + 1)); continue; }
+  last="$(tail -n 1 "$status_file")"
+  case "$last" in
+    done:*|closed:*|archived:*)
+      if [ "$APPLY" -eq 1 ]; then
+        # Revalidate status and identity immediately before moving the window.
+        current2="$(tmux display-message -p -t "$SESSION:$window_id" '#{window_id}\t#{window_name}' 2>/dev/null || true)"
+        latest="$(tail -n 1 "$status_file")"
+        case "$latest" in done:*|closed:*|archived:*) ;; *) kept=$((kept + 1)); continue ;; esac
+        [ "$current2" = "$entry" ] || { kept=$((kept + 1)); continue; }
+        tmux move-window -s "$SESSION:$window_id" -t "$PARK_SESSION:"
+        printf 'parked: %s id=%s (%s)\n' "$snapshot_name" "$window_id" "${latest%%:*}"
+      else
+        printf 'would-park: %s id=%s (%s)\n' "$snapshot_name" "$window_id" "${last%%:*}"
+      fi
+      parked=$((parked + 1))
+      ;;
+    *) kept=$((kept + 1)) ;;
+  esac
+done
+
+if [ "$APPLY" -eq 1 ]; then
+  printf 'parking complete: parked=%d kept=%d session=%s\n' "$parked" "$kept" "$PARK_SESSION"
+else
+  printf 'dry run: would-park=%d kept=%d (use --apply to move; nothing was changed)\n' "$parked" "$kept"
+fi

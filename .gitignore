@@ -3,3 +3,4 @@
 /gui-queue/
 /fleet/logs/
 /fleet/state/
+.DS_Store
