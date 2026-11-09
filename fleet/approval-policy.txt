@@ -80,3 +80,22 @@ deny auth-shaped (?i)(login|logout|credential|api[ _-]?key|token)
 
 # Package installs beyond the package managers above.
 deny install-cmd (?i)Run shell command.*(apt|apt-get|brew install|gem install|cargo add)
+
+# ---- current ZCode TUI shape (zcode-app-cli 3.11.x) -------------------------
+# The dialog header is "Permission · <Tool>" (e.g. "Permission · Bash") and
+# the command/path lines sit BELOW the header; options are arrow-selected
+# ("→ Allow once" preselected) and confirmed with Enter. Same classes, new
+# prompt anchor — deny still wins.
+allow read-own-tree Permission · Read.*({{HOME}}/projects/personal/|{{CWD}}/)
+allow dir-access Permission · (Bash|Shell).*({{HOME}}/projects/personal/|{{CWD}}/)
+allow file-edit Permission · (Edit|Write|Update).*({{CWD}}/|{{STATUS}})
+allow git-readonly Permission · (Bash|Shell).*git (status|log|diff|show|branch|rev-parse|remote -v|describe|ls-files)
+allow gh-readonly Permission · (Bash|Shell).*gh (pr view|pr checks|pr list|pr diff|issue view|issue list|issue status|repo view|run view|run list|release view)
+allow npm-readonly Permission · (Bash|Shell).*npm (list|ls|view|outdated|search)
+allow status-write Permission · (Edit|Write|Update).*{{STATUS}}
+deny network-mutating Permission · (Bash|Shell).*(git push|git remote (add|remove|set-url|prune|update)|git (reset --hard|clean|filter-branch)|npm (install|ci|publish|add|remove|unlink)|yarn (add|remove|publish)|pnpm (add|install|publish)|pip (install|publish)|cargo (install|publish)|brew (install|upgrade|uninstall)|deploy|flyctl|vercel|netlify|wrangler|gcloud|aws)
+deny raw-fetch Permission · (Bash|Shell).*(curl|wget)
+deny delete Permission · (Bash|Shell).*\brm\b
+deny destructive-git Permission · (Bash|Shell).*git (reset --hard|clean|checkout --|restore|filter-branch|rebase|merge)
+deny gh-mutating Permission · (Bash|Shell).*gh (pr (create|merge|close|edit)|issue (create|close|edit)|repo (create|fork|delete)|release (create|delete)|auth)
+deny install-cmd (?i)Permission · (Bash|Shell).*(apt|apt-get|brew install|gem install|cargo add)

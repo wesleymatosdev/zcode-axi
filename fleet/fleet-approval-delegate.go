@@ -72,6 +72,25 @@ deny destructive-git Run shell command.*git (reset --hard|clean|checkout --|rest
 deny gh-mutating Run shell command.*gh (pr (create|merge|close|edit)|issue (create|close|edit)|repo (create|fork|delete)|release (create|delete)|auth)
 deny auth-shaped (?i)(login|logout|credential|api[ _-]?key|token)
 deny install-cmd (?i)Run shell command.*(apt|apt-get|brew install|gem install|cargo add)
+
+# ---- current ZCode TUI shape (zcode-app-cli 3.11.x) -------------------------
+# The dialog header is "Permission · <Tool>" (e.g. "Permission · Bash") and
+# the command/path lines sit BELOW the header; options are arrow-selected
+# ("→ Allow once" preselected) and confirmed with Enter. Same classes, new
+# prompt anchor — deny still wins.
+allow read-own-tree Permission · Read.*({{HOME}}/projects/personal/|{{CWD}}/)
+allow dir-access Permission · (Bash|Shell).*({{HOME}}/projects/personal/|{{CWD}}/)
+allow file-edit Permission · (Edit|Write|Update).*({{CWD}}/|{{STATUS}})
+allow git-readonly Permission · (Bash|Shell).*git (status|log|diff|show|branch|rev-parse|remote -v|describe|ls-files)
+allow gh-readonly Permission · (Bash|Shell).*gh (pr view|pr checks|pr list|pr diff|issue view|issue list|issue status|repo view|run view|run list|release view)
+allow npm-readonly Permission · (Bash|Shell).*npm (list|ls|view|outdated|search)
+allow status-write Permission · (Edit|Write|Update).*{{STATUS}}
+deny network-mutating Permission · (Bash|Shell).*(git push|git remote (add|remove|set-url|prune|update)|git (reset --hard|clean|filter-branch)|npm (install|ci|publish|add|remove|unlink)|yarn (add|remove|publish)|pnpm (add|install|publish)|pip (install|publish)|cargo (install|publish)|brew (install|upgrade|uninstall)|deploy|flyctl|vercel|netlify|wrangler|gcloud|aws)
+deny raw-fetch Permission · (Bash|Shell).*(curl|wget)
+deny delete Permission · (Bash|Shell).*\brm\b
+deny destructive-git Permission · (Bash|Shell).*git (reset --hard|clean|checkout --|restore|filter-branch|rebase|merge)
+deny gh-mutating Permission · (Bash|Shell).*gh (pr (create|merge|close|edit)|issue (create|close|edit)|repo (create|fork|delete)|release (create|delete)|auth)
+deny install-cmd (?i)Permission · (Bash|Shell).*(apt|apt-get|brew install|gem install|cargo add)
 `
 
 type rule struct {
@@ -90,6 +109,7 @@ type dialog struct {
 	promptText string // region text EXCLUDING option lines (for policy matching)
 	text       string // normalized region text (kept for debugging)
 	options    []paneOption
+	arrow      bool   // current ZCode arrow UI (Enter activates the → option)
 	fp         string // fingerprint of the dialog (head + options)
 }
 
@@ -117,18 +137,34 @@ type delegate struct {
 
 var (
 	optRe = regexp.MustCompile(`^\s*[❯>✓*]?\s*(\d+)[.)]\s+(\S.*)$`)
+	// Arrow-selected option (current ZCode TUI): "→ Allow once   Approve
+	// only this request" — the label is the first column; the description
+	// column (2+ spaces away) is stripped.
+	arrowOptRe     = regexp.MustCompile(`^\s*[→❯>]\s*(\S.*?)(?:\s{2,}.*)?$`)
+	unlabeledOptRe = regexp.MustCompile(`^\s*(\S.*?)(?:\s{2,}.*)?$`)
 	// Dialog triggers: the proceed shape (read/bash), the file-edit shape
-	// ("Do you want to make this edit to <path>?"), and the folder-trust
-	// prompt at TUI startup.
-	triggerRe = regexp.MustCompile(`Do you want to (proceed|make this edit|run)`)
-	trustRe   = regexp.MustCompile(`(?i)do you trust (the files in )?this folder`)
-	footerRe  = regexp.MustCompile(`(?i)(esc to cancel|tab to amend|enter to confirm|press enter)`)
+	// ("Do you want to make this edit to <path>?"), the folder-trust
+	// prompt at TUI startup, and the current ZCode permission header
+	// ("Permission · <Tool>", e.g. "Permission · Bash").
+	triggerRe    = regexp.MustCompile(`Do you want to (proceed|make this edit|run)`)
+	newTriggerRe = regexp.MustCompile(`Permission ·`)
+	trustRe      = regexp.MustCompile(`(?i)do you trust (the files in )?this folder`)
+	footerRe     = regexp.MustCompile(`(?i)(esc to cancel|esc cancel|tab to amend|enter to confirm|press enter|type to filter|up/down|ctrl\+o|pgup|pgdn)`)
+	// Pre-option hint line ("Filter: type to search") — skipped like a
+	// footer but does NOT end the option list (the real nav footer does).
+	hintRe = regexp.MustCompile(`(?i)(filter:|type to search)`)
+	// Risk banner lines of the current ZCode shape — context, never the
+	// command, and never policy-relevant.
+	bannerRe  = regexp.MustCompile(`^\s*(High risk tools? require[sd]? explicit approval|Risk: \w+)`)
 	spawnedRe = regexp.MustCompile(`^spawned: .* cwd=(\S+) pid=`)
 	// Option preference for allow answers: most session-scoped first.
 	// "switch to accept edits" converges a manual-mode session toward the
 	// fleet's default (yolo) with one keypress.
 	scopedOptRe = regexp.MustCompile(`(?i)(always allow access|allow reading from|don['’‘]t ask|accept edits)`)
 	yesOptRe    = regexp.MustCompile(`(?i)^yes\b`)
+	// The arrow UI's preselected option may only be activated when it is
+	// an affirmative ("Allow once") — never navigate or blind-Enter.
+	allowOnceRe = regexp.MustCompile(`(?i)^allow\b`)
 )
 
 // Knobs the tests override via env; the defaults are the production shape.
@@ -297,7 +333,14 @@ func loadPolicy(path, cwd, statusPath string) []rule {
 func expandPlaceholders(expr, cwd, statusPath string) string {
 	home, _ := os.UserHomeDir()
 	expr = strings.ReplaceAll(expr, "{{HOME}}", regexp.QuoteMeta(home))
-	expr = strings.ReplaceAll(expr, "{{CWD}}", regexp.QuoteMeta(cwd))
+	if cwd != "" {
+		expr = strings.ReplaceAll(expr, "{{CWD}}", regexp.QuoteMeta(cwd))
+	} else {
+		// Delegate attached before the spawned: line — an empty {{CWD}}
+		// alternative would match every path; make the rule inert until
+		// watch() re-loads the policy with the real cwd.
+		expr = strings.ReplaceAll(expr, "{{CWD}}", "\x00")
+	}
 	expr = strings.ReplaceAll(expr, "{{STATUS}}", regexp.QuoteMeta(statusPath))
 	// Edit dialogs often show only the file's basename.
 	expr = strings.ReplaceAll(expr, "{{STATUS_BASE}}", regexp.QuoteMeta(filepath.Base(statusPath)))
@@ -343,13 +386,17 @@ func paneDead(session, taskID string) bool {
 	return strings.TrimSpace(strings.Split(string(out), "\n")[0]) == "1"
 }
 
-// detectDialog finds the first permission dialog in the pane. Only a matched
-// trigger line counts; anything else returns nil and the caller never
-// touches the pane.
+// detectDialog finds the first permission dialog in the pane. Recognized
+// shapes: the proceed shape ("Do you want to proceed?" with numbered
+// options), the file-edit shape, the folder-trust prompt, and the current
+// ZCode permission header ("Permission · <Tool>" with arrow-selected
+// options). Only a matched trigger line counts; anything else returns nil
+// and the caller never touches the pane.
 func detectDialog(pane string) *dialog {
 	lines := strings.Split(pane, "\n")
 	for i, ln := range lines {
-		if !triggerRe.MatchString(ln) && !trustRe.MatchString(ln) {
+		arrow := newTriggerRe.MatchString(ln)
+		if !arrow && !triggerRe.MatchString(ln) && !trustRe.MatchString(ln) {
 			continue
 		}
 		start := i - 8
@@ -360,7 +407,7 @@ func detectDialog(pane string) *dialog {
 		if end > len(lines) {
 			end = len(lines)
 		}
-		dg := &dialog{}
+		dg := &dialog{arrow: arrow}
 		// Prompt head: nearest non-empty line above the trigger that is not
 		// itself an option/footer line — usually the command or file path.
 		for j := i - 1; j >= start; j-- {
@@ -371,7 +418,53 @@ func detectDialog(pane string) *dialog {
 			dg.head = t
 			break
 		}
-		if dg.head == "" {
+		var promptBelow []string
+		if arrow {
+			// Current ZCode shape: the command lives BELOW the header,
+			// preceded by risk-banner lines and followed by the "Filter:"
+			// hint, arrow options, and the nav footer. An arrow trigger
+			// with no option line at all is prose, not a dialog — skip.
+			seenFooter := false
+			for j := i + 1; j < end; j++ {
+				t := strings.TrimSpace(lines[j])
+				if hintRe.MatchString(t) {
+					continue
+				}
+				if footerRe.MatchString(t) {
+					seenFooter = true
+					continue
+				}
+				if bannerRe.MatchString(lines[j]) || t == "" {
+					continue
+				}
+				if m := optRe.FindStringSubmatch(lines[j]); m != nil {
+					dg.options = append(dg.options, paneOption{num: m[1], text: strings.TrimSpace(m[2])})
+					continue
+				}
+				if m := arrowOptRe.FindStringSubmatch(lines[j]); m != nil {
+					dg.options = append(dg.options, paneOption{num: "→", text: strings.TrimSpace(m[1])})
+					continue
+				}
+				if len(dg.options) == 0 {
+					promptBelow = append(promptBelow, t)
+					continue
+				}
+				if seenFooter || len(t) <= 2 || triggerRe.MatchString(lines[j]) || newTriggerRe.MatchString(lines[j]) {
+					continue
+				}
+				if m := unlabeledOptRe.FindStringSubmatch(t); m != nil {
+					dg.options = append(dg.options, paneOption{text: strings.TrimSpace(m[1])})
+				}
+			}
+			if len(dg.options) == 0 {
+				continue
+			}
+			if len(promptBelow) > 0 {
+				dg.head = promptBelow[0]
+			} else {
+				dg.head = strings.TrimSpace(ln)
+			}
+		} else if dg.head == "" {
 			dg.head = strings.TrimSpace(ln)
 		}
 		// Numbered options below the trigger; wrapped continuation lines
@@ -379,30 +472,34 @@ func detectDialog(pane string) *dialog {
 		// Guards so stray keystrokes can't perturb the dialog identity:
 		// 1–2 char lines (e.g. a TTY-echoed answer digit) never fold, and
 		// nothing folds past the footer — a real dialog ends there.
-		seenFooter := false
-		for _, rl := range lines[i+1 : end] {
-			if m := optRe.FindStringSubmatch(rl); m != nil {
-				dg.options = append(dg.options, paneOption{num: m[1], text: strings.TrimSpace(m[2])})
-				continue
-			}
-			t := strings.TrimSpace(rl)
-			if footerRe.MatchString(t) {
-				seenFooter = true
-				continue
-			}
-			if t == "" || seenFooter || len(t) <= 2 || triggerRe.MatchString(rl) {
-				continue
-			}
-			if n := len(dg.options); n > 0 {
-				dg.options[n-1].text = strings.TrimSpace(dg.options[n-1].text + " " + t)
+		if !arrow {
+			seenFooter := false
+			for _, rl := range lines[i+1 : end] {
+				if m := optRe.FindStringSubmatch(rl); m != nil {
+					dg.options = append(dg.options, paneOption{num: m[1], text: strings.TrimSpace(m[2])})
+					continue
+				}
+				t := strings.TrimSpace(rl)
+				if footerRe.MatchString(t) {
+					seenFooter = true
+					continue
+				}
+				if t == "" || seenFooter || len(t) <= 2 || triggerRe.MatchString(rl) {
+					continue
+				}
+				if n := len(dg.options); n > 0 {
+					dg.options[n-1].text = strings.TrimSpace(dg.options[n-1].text + " " + t)
+				}
 			}
 		}
 		// Prompt text for policy matching: the few lines above and
-		// including the trigger line (the tool header + command), collapsed.
-		// Option lines are deliberately EXCLUDED — a "git push" dialog
-		// offering a directory-grant option must classify on the command,
-		// not on the option wording. The window is small so stale
-		// scrollback above the dialog can't leak into classification.
+		// including the trigger line (the tool header + command), plus —
+		// in the current ZCode shape — the command lines below the
+		// header. Option lines are deliberately EXCLUDED (both the
+		// numbered labels and the arrow UI's label+description columns) —
+		// a "git push" dialog must classify on the command, not on the
+		// option wording. The window is small so stale scrollback above
+		// the dialog can't leak into classification.
 		promptStart := i - 5
 		if promptStart < start {
 			promptStart = start
@@ -416,6 +513,10 @@ func detectDialog(pane string) *dialog {
 			if pb.Len() > 0 {
 				pb.WriteByte(' ')
 			}
+			pb.WriteString(t)
+		}
+		for _, t := range promptBelow {
+			pb.WriteByte(' ')
 			pb.WriteString(t)
 		}
 		dg.promptText = pb.String()
@@ -466,11 +567,25 @@ func (d *delegate) decide(dg *dialog) (string, string) {
 	return "deny", "unmatched"
 }
 
-// pickOption chooses which numbered option to press for an allow verdict:
+// pickOption chooses which key to press for an allow verdict. Arrow UI: the
+// preselected (→) option is what Enter activates — only press Enter when
+// that option is an affirmative ("Allow once"); never navigate blind, and
+// return "" (escalate) when the preselection is anything else. Numbered UI:
 // the most session-scoped affirmative available, else plain yes, else the
-// first option. A dialog with no numbered options is not safe to answer —
+// first option. A dialog with no activatable key is not safe to answer —
 // returns "" and the caller escalates instead.
 func pickOption(dg *dialog) string {
+	if dg.arrow {
+		for _, o := range dg.options {
+			if o.num == "→" {
+				if allowOnceRe.MatchString(o.text) {
+					return "Enter"
+				}
+				return ""
+			}
+		}
+		return ""
+	}
 	if len(dg.options) == 0 {
 		return ""
 	}
@@ -518,8 +633,8 @@ func (d *delegate) publishEvent(detail string) {
 	_ = exec.Command(d.eventCmd, d.taskID, "needs-decision", detail).Run()
 }
 
-func (d *delegate) sendDigit(digit string) bool {
-	return exec.Command("tmux", "send-keys", "-t", d.window(), digit).Run() == nil
+func (d *delegate) sendKey(key string) bool {
+	return exec.Command("tmux", "send-keys", "-t", d.window(), key).Run() == nil
 }
 
 // handleDialog acts on a stable dialog: auto-answer for allow, escalate for
@@ -538,9 +653,10 @@ func (d *delegate) handleDialog(dg *dialog) string {
 	if action == "allow" {
 		opt := pickOption(dg)
 		if opt == "" {
-			// No numbered options → never blind-answer.
+			// No activatable key (no numbered options, or the arrow UI's
+			// preselected option is not an affirmative) → never blind-answer.
 			if !hs.escalated {
-				d.escalate(dg, class+" (no numbered options)")
+				d.escalate(dg, class+" (no activatable option)")
 				hs.escalated = true
 			}
 			return "escalated"
@@ -554,7 +670,7 @@ func (d *delegate) handleDialog(dg *dialog) string {
 			}
 			return "escalated"
 		}
-		if !d.sendDigit(opt) {
+		if !d.sendKey(opt) {
 			d.audit("approval:error fp=%s class=%s keys-failed prompt=%s", dg.fp, class, head)
 			return "error"
 		}
