@@ -65,7 +65,7 @@ allow gh-readonly Run shell command.*gh (pr view|pr checks|pr list|pr diff|issue
 allow npm-readonly Run shell command.*npm (list|ls|view|outdated|search)
 allow status-write (Edit|Write|Update) file.*{{STATUS}}
 allow trust-folder [Dd]o you trust (the files in )?this folder
-deny network-mutating Run shell command.*(git push|git remote (add|remove|set-url|prune|update)|npm (install|ci|publish|add|remove|unlink)|yarn (add|remove|publish)|pnpm (add|install|publish)|pip (install|publish)|cargo (install|publish)|brew (install|upgrade|uninstall)|deploy|flyctl|vercel|netlify|wrangler|gcloud|aws)
+deny network-mutating Run shell command.*(git push|git remote (add|remove|set-url|prune|update)|git (reset --hard|clean|filter-branch)|npm (install|ci|publish|add|remove|unlink)|yarn (add|remove|publish)|pnpm (add|install|publish)|pip (install|publish)|cargo (install|publish)|brew (install|upgrade|uninstall)|deploy|flyctl|vercel|netlify|wrangler|gcloud|aws)
 deny raw-fetch Run shell command.*(curl|wget)
 deny delete Run shell command.*\brm\b
 deny destructive-git Run shell command.*git (reset --hard|clean|checkout --|restore|filter-branch|rebase|merge)
@@ -91,6 +91,22 @@ deny delete Permission · (Bash|Shell).*\brm\b
 deny destructive-git Permission · (Bash|Shell).*git (reset --hard|clean|checkout --|restore|filter-branch|rebase|merge)
 deny gh-mutating Permission · (Bash|Shell).*gh (pr (create|merge|close|edit)|issue (create|close|edit)|repo (create|fork|delete)|release (create|delete)|auth)
 deny install-cmd (?i)Permission · (Bash|Shell).*(apt|apt-get|brew install|gem install|cargo add)
+
+# ---- launchctl read-only probes + LaunchAgents reads (2026-11-09) -----------
+# The dash-launchd-1109 worker stalls on read-only service probes. Allowed:
+# launchctl print/list/managername (print-disabled included) optionally
+# piped/annotated with the read-only filters grep/head/echo/ls (2>&1 and
+# 2>/dev/null included), statement-chained only when every statement is in
+# that set; and grep/ls reads under ~/Library/LaunchAgents/. Redirects (>)
+# within a statement are tolerated (the observed probes use 2>/dev/null).
+# Still default-deny: launchctl bootstrap/bootout/kickstart/enable/disable/
+# remove (and load/unload), rm, sudo. curl stays denied everywhere — RE2 has
+# no negative lookahead, so "curl to non-localhost" cannot be exempted from
+# the raw-fetch deny; a localhost curl escalates like any other fetch.
+allow launchctl-readonly (Run shell command|Permission · (Bash|Shell)) launchctl (print|list|managername)[\w-]*( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls)( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*)*($| Do you want to .*)
+allow launchagents-read ((Run shell command|Permission · (Bash|Shell)) (grep|ls)( [^;|]*)?({{HOME}}|~)/Library/LaunchAgents\b[^;|]*)(\| (grep|head|echo|ls)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls)( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*)*($| Do you want to .*)
+deny launchctl-mutating (Run shell command|Permission · (Bash|Shell)).*launchctl (bootstrap|bootout|kickstart|enable|disable|remove|load|unload)
+deny sudo (Run shell command|Permission · (Bash|Shell)).*\bsudo\b
 `
 
 type rule struct {

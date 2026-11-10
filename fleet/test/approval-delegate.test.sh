@@ -373,6 +373,63 @@ else
 fi
 assert_contains "$SCRATCH/t11-zcurl.status" "needs-decision: pending approval dialog:" "new-shape deny surfaced in status file"
 
+# ---------------------------------------------------------------- scenario 12
+# launchctl read-only probe compound (the live dash-launchd-1109 stall):
+# allowlisted → preselected Allow once via Enter
+note ""
+note "== scenario 12: launchctl-readonly compound probe → Enter on Allow once =="
+P="$SCRATCH/p12.txt"
+cat >"$P" <<EOF
+Permission · Bash
+High risk tools require explicit approval
+
+ Risk: high
+ launchctl print gui/501/com.hermesagent.serve 2>&1 | head -20; echo "==="; grep -l "9119" ~/Library/LaunchAgents/*.plist 2>/dev/null
+Filter: type to search
+
+→ Allow once                      Approve only this request
+  Always allow in this project    Allow matching Bash requests
+  Deny
+
+Type to filter · Up/Down choose · Ctrl+O details · Enter confirm · Esc cancel
+EOF
+new_prompt_pane "t12-launchctl" "$P"
+eval "\"$DELEGATE\" $(deleg_args t12-launchctl) t12-launchctl" >/dev/null 2>&1
+assert_contains "$SCRATCH/t12-launchctl.approvals.log" "class=launchctl-readonly option=Enter" "launchctl-readonly auto-answered (Enter on Allow once)"
+if grep -q "approval:escalate" "$SCRATCH/t12-launchctl.approvals.log"; then
+  bad "launchctl-readonly did not escalate"
+else
+  ok "launchctl-readonly did not escalate"
+fi
+
+# ---------------------------------------------------------------- scenario 13
+# launchctl mutation: kickstart → escalate untouched
+note ""
+note "== scenario 13: launchctl kickstart escalates untouched =="
+P="$SCRATCH/p13.txt"
+cat >"$P" <<EOF
+Permission · Bash
+High risk tools require explicit approval
+
+ Risk: high
+ launchctl kickstart -k gui/501/com.hermesagent.serve
+Filter: type to search
+
+→ Allow once                      Approve only this request
+  Deny
+
+Type to filter · Up/Down choose · Ctrl+O details · Enter confirm · Esc cancel
+EOF
+new_prompt_pane "t13-kickstart" "$P"
+eval "\"$DELEGATE\" $(deleg_args t13-kickstart) t13-kickstart" >/dev/null 2>&1
+assert_contains "$SCRATCH/t13-kickstart.approvals.log" "class=launchctl-mutating" "kickstart classified launchctl-mutating"
+assert_contains "$SCRATCH/t13-kickstart.approvals.log" "approval:escalate fp=" "kickstart escalated"
+if grep -q "approval:auto" "$SCRATCH/t13-kickstart.approvals.log"; then
+  bad "kickstart sent no keys"
+else
+  ok "kickstart sent no keys"
+fi
+
 note ""
 note "=== $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
