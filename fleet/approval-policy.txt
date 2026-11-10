@@ -103,15 +103,18 @@ deny install-cmd (?i)Permission · (Bash|Shell).*(apt|apt-get|brew install|gem i
 # ---- launchctl read-only probes + LaunchAgents reads (2026-11-09) -----------
 # The dash-launchd-1109 worker stalls on read-only service probes. Allowed:
 # launchctl print/list/managername (print-disabled included) optionally
-# piped/annotated with the read-only filters grep/head/echo/ls (2>&1 and
+# piped/annotated with the read-only filters grep/head/echo/ls/cut (2>&1 and
 # 2>/dev/null included), statement-chained only when every statement is in
-# that set; and grep/ls reads under ~/Library/LaunchAgents/. Redirects (>)
-# within a statement are tolerated (the observed probes use 2>/dev/null).
-# Still default-deny: launchctl bootstrap/bootout/kickstart/enable/disable/
-# remove (and load/unload), rm, sudo. curl stays denied everywhere — RE2 has
-# no negative lookahead, so "curl to non-localhost" cannot be exempted from
-# the raw-fetch deny; a localhost curl escalates like any other fetch.
-allow launchctl-readonly (Run shell command|Permission · (Bash|Shell)) launchctl (print|list|managername)[\w-]*( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls)( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*)*($| Do you want to .*)
-allow launchagents-read ((Run shell command|Permission · (Bash|Shell)) (grep|ls)( [^;|]*)?({{HOME}}|~)/Library/LaunchAgents\b[^;|]*)(\| (grep|head|echo|ls)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls)( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*)*($| Do you want to .*)
+# that set plus bare read-only process inspection (ps/pgrep/lsof — none can
+# mutate; kill/pkill stay denied); and grep/ls reads under
+# ~/Library/LaunchAgents/. Redirects (>) within a statement are tolerated
+# (the observed probes use 2>/dev/null). Still default-deny: launchctl
+# bootstrap/bootout/kickstart/enable/disable/remove (and load/unload), rm,
+# sudo. curl stays denied everywhere — RE2 has no negative lookahead, so
+# "curl to non-localhost" cannot be exempted from the raw-fetch deny; a
+# localhost curl escalates like any other fetch.
+allow launchctl-readonly (Run shell command|Permission · (Bash|Shell)) launchctl (print|list|managername)[\w-]*( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls|cut|(pgrep|ps|lsof)\b)( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*)*($| Do you want to .*)
+allow launchagents-read ((Run shell command|Permission · (Bash|Shell)) (grep|ls)( [^;|]*)?({{HOME}}|~)/Library/LaunchAgents\b[^;|]*)(\| (grep|head|echo|ls|cut)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls|cut|(pgrep|ps|lsof)\b)( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*)*($| Do you want to .*)
+allow proc-readonly (Run shell command|Permission · (Bash|Shell)) (pgrep|ps|lsof)\b( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls|cut|(pgrep|ps|lsof)\b)( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*)*($| Do you want to .*)
 deny launchctl-mutating (Run shell command|Permission · (Bash|Shell)).*launchctl (bootstrap|bootout|kickstart|enable|disable|remove|load|unload)
 deny sudo (Run shell command|Permission · (Bash|Shell)).*\bsudo\b

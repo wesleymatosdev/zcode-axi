@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,19 @@ Filter: type to search
 		{`grep -l "9119" ~/Library/LaunchAgents/*.plist 2>/dev/null`, "allow", "launchagents-read"},
 		{"ls -la ~/Library/LaunchAgents", "allow", "launchagents-read"},
 		{`grep -c dashboard ~/Library/LaunchAgents/*.plist 2>/dev/null | grep -v ":0"`, "allow", "launchagents-read"},
+		// proc-readonly: bare read-only process inspection (the live
+		// worker's exact ps compound included).
+		{"lsof -nP -iTCP:9119 -sTCP:LISTEN", "allow", "proc-readonly"},
+		{"ps -ef | grep zcode", "allow", "proc-readonly"},
+		{"pgrep -fl hermes", "allow", "proc-readonly"},
+		{"ps -o pid,ppid,args -p 84254 2>&1; echo ---; ps -o pid,ppid,args -p 88612 2>&1 | cut -c1-160", "allow", "proc-readonly"},
+		{`lsof -nP -iTCP:9119 -sTCP:LISTEN; echo rc=$?; launchctl list | grep -E "com.x"`, "allow", "proc-readonly"},
+		{"launchctl list | grep hermes; pgrep -fl serve", "allow", "launchctl-readonly"},
+		// kill/pkill stay denied; curl in the chain denies the whole compound.
+		{"kill -9 123", "deny", "unmatched"},
+		{"ps -ef; kill -9 123", "deny", "unmatched"},
+		{"pkill -f zcode", "deny", "unmatched"},
+		{`lsof -nP -iTCP:9119 -sTCP:LISTEN; curl -s http://127.0.0.1:9119/`, "deny", "raw-fetch"},
 		// Deny wins over the new allow classes.
 		{`grep token ~/Library/LaunchAgents/foo.plist`, "deny", "auth-shaped"},
 		{`grep -l key ~/Library/LaunchAgents/foo.plist && curl https://example.com`, "deny", "raw-fetch"},
@@ -188,6 +202,39 @@ func TestEmptyCwdRulesStayInert(t *testing.T) {
 	action, class := d.decide(dg)
 	if action != "deny" {
 		t.Errorf("decide with empty cwd = %s/%s, want deny/unmatched (cwd rules inert)", action, class)
+	}
+}
+
+func TestDetectLongDiffWriteDialog(t *testing.T) {
+	// Live-caught gap (2026-11-09): a Write dialog's diff pushes the
+	// options ~27 lines below the "Permission · Write" header — past the
+	// old fixed +15 window, so the dialog was missed entirely.
+	var b strings.Builder
+	b.WriteString("working: writing the dashboard agent\n\nPermission · Write\nRisk: medium\n")
+	b.WriteString("● Write /Users/wesleymatos/Library/LaunchAgents/com.x.plist +19 -0\n")
+	for i := 1; i <= 19; i++ {
+		b.WriteString("     ")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(" │+ <line of plist diff>\n")
+	}
+	b.WriteString("Filter: type to search\n\n→ Allow once                      Approve only this request\n  Always allow in this project    Allow matching Write requests\n  Deny\n\nType to filter · Up/Down choose · Ctrl+O details · Enter confirm · Esc cancel\n")
+	dg := detectDialog(b.String())
+	if dg == nil {
+		t.Fatal("long-diff Write dialog not detected")
+	}
+	if !dg.arrow || len(dg.options) < 3 {
+		t.Fatalf("dialog misparsed: arrow=%v options=%+v", dg.arrow, dg.options)
+	}
+	if !strings.Contains(dg.head, "com.x.plist") {
+		t.Errorf("head = %q, want the Write target line", dg.head)
+	}
+	if strings.Contains(dg.promptText, "Allow once") {
+		t.Errorf("option labels leaked into promptText: %q", dg.promptText)
+	}
+	d := policyFor("/tmp")
+	action, class := d.decide(dg)
+	if action != "deny" {
+		t.Errorf("decide = %s/%s, want deny (LaunchAgents writes are not allowlisted)", action, class)
 	}
 }
 

@@ -95,16 +95,19 @@ deny install-cmd (?i)Permission · (Bash|Shell).*(apt|apt-get|brew install|gem i
 # ---- launchctl read-only probes + LaunchAgents reads (2026-11-09) -----------
 # The dash-launchd-1109 worker stalls on read-only service probes. Allowed:
 # launchctl print/list/managername (print-disabled included) optionally
-# piped/annotated with the read-only filters grep/head/echo/ls (2>&1 and
+# piped/annotated with the read-only filters grep/head/echo/ls/cut (2>&1 and
 # 2>/dev/null included), statement-chained only when every statement is in
-# that set; and grep/ls reads under ~/Library/LaunchAgents/. Redirects (>)
-# within a statement are tolerated (the observed probes use 2>/dev/null).
-# Still default-deny: launchctl bootstrap/bootout/kickstart/enable/disable/
-# remove (and load/unload), rm, sudo. curl stays denied everywhere — RE2 has
-# no negative lookahead, so "curl to non-localhost" cannot be exempted from
-# the raw-fetch deny; a localhost curl escalates like any other fetch.
-allow launchctl-readonly (Run shell command|Permission · (Bash|Shell)) launchctl (print|list|managername)[\w-]*( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls)( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*)*($| Do you want to .*)
-allow launchagents-read ((Run shell command|Permission · (Bash|Shell)) (grep|ls)( [^;|]*)?({{HOME}}|~)/Library/LaunchAgents\b[^;|]*)(\| (grep|head|echo|ls)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls)( [^;|]*)?(\| (grep|head|echo|ls)( [^;|]*)?)*)*($| Do you want to .*)
+# that set plus bare read-only process inspection (ps/pgrep/lsof — none can
+# mutate; kill/pkill stay denied); and grep/ls reads under
+# ~/Library/LaunchAgents/. Redirects (>) within a statement are tolerated
+# (the observed probes use 2>/dev/null). Still default-deny: launchctl
+# bootstrap/bootout/kickstart/enable/disable/remove (and load/unload), rm,
+# sudo. curl stays denied everywhere — RE2 has no negative lookahead, so
+# "curl to non-localhost" cannot be exempted from the raw-fetch deny; a
+# localhost curl escalates like any other fetch.
+allow launchctl-readonly (Run shell command|Permission · (Bash|Shell)) launchctl (print|list|managername)[\w-]*( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls|cut|(pgrep|ps|lsof)\b)( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*)*($| Do you want to .*)
+allow launchagents-read ((Run shell command|Permission · (Bash|Shell)) (grep|ls)( [^;|]*)?({{HOME}}|~)/Library/LaunchAgents\b[^;|]*)(\| (grep|head|echo|ls|cut)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls|cut|(pgrep|ps|lsof)\b)( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*)*($| Do you want to .*)
+allow proc-readonly (Run shell command|Permission · (Bash|Shell)) (pgrep|ps|lsof)\b( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*(; (launchctl (print|list|managername)[\w-]*|grep|head|echo|ls|cut|(pgrep|ps|lsof)\b)( [^;|]*)?(\| (grep|head|echo|ls|cut)( [^;|]*)?)*)*($| Do you want to .*)
 deny launchctl-mutating (Run shell command|Permission · (Bash|Shell)).*launchctl (bootstrap|bootout|kickstart|enable|disable|remove|load|unload)
 deny sudo (Run shell command|Permission · (Bash|Shell)).*\bsudo\b
 `
@@ -171,7 +174,7 @@ var (
 	hintRe = regexp.MustCompile(`(?i)(filter:|type to search)`)
 	// Risk banner lines of the current ZCode shape — context, never the
 	// command, and never policy-relevant.
-	bannerRe  = regexp.MustCompile(`^\s*(High risk tools? require[sd]? explicit approval|Risk: \w+)`)
+	bannerRe  = regexp.MustCompile(`^\s*(High risk tools? require[sd]? explicit approval|Tool has side effects and requires approval|Risk: \w+)`)
 	spawnedRe = regexp.MustCompile(`^spawned: .* cwd=(\S+) pid=`)
 	// Option preference for allow answers: most session-scoped first.
 	// "switch to accept edits" converges a manual-mode session toward the
@@ -382,11 +385,11 @@ func windowExists(session, taskID string) bool {
 }
 
 func capturePane(window string) (string, bool) {
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-J", "-S", "-60", "-t", window).Output()
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-J", "-S", "-120", "-t", window).Output()
 	if err != nil {
 		// Older tmux without -J: retry plain; the option-continuation
 		// joining in detectDialog still handles wrapped options.
-		out, err = exec.Command("tmux", "capture-pane", "-p", "-S", "-60", "-t", window).Output()
+		out, err = exec.Command("tmux", "capture-pane", "-p", "-S", "-120", "-t", window).Output()
 		if err != nil {
 			return "", false
 		}
@@ -436,19 +439,26 @@ func detectDialog(pane string) *dialog {
 		}
 		var promptBelow []string
 		if arrow {
-			// Current ZCode shape: the command lives BELOW the header,
+			// Current ZCode shape: the command/diff lives BELOW the header,
 			// preceded by risk-banner lines and followed by the "Filter:"
-			// hint, arrow options, and the nav footer. An arrow trigger
-			// with no option line at all is prose, not a dialog — skip.
+			// hint, arrow options, and the nav footer. Write dialogs can
+			// separate header and options by a whole diff, so the forward
+			// scan is bounded by the footer (max 80 lines), not a fixed
+			// window. An arrow trigger with no option line at all is
+			// prose, not a dialog — skip.
 			seenFooter := false
-			for j := i + 1; j < end; j++ {
+			scanLimit := i + 80
+			if scanLimit > len(lines) {
+				scanLimit = len(lines)
+			}
+			for j := i + 1; j < scanLimit; j++ {
 				t := strings.TrimSpace(lines[j])
 				if hintRe.MatchString(t) {
 					continue
 				}
 				if footerRe.MatchString(t) {
 					seenFooter = true
-					continue
+					break
 				}
 				if bannerRe.MatchString(lines[j]) || t == "" {
 					continue

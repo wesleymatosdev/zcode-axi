@@ -430,6 +430,91 @@ else
   ok "kickstart sent no keys"
 fi
 
+# ---------------------------------------------------------------- scenario 14
+# bare read-only process inspection (the live worker's exact ps compound):
+# allowlisted → Enter on Allow once
+note ""
+note "== scenario 14: proc-readonly ps/pgrep/lsof → Enter on Allow once =="
+P="$SCRATCH/p14.txt"
+cat >"$P" <<EOF
+Permission · Bash
+High risk tools require explicit approval
+
+ Risk: high
+ ps -o pid,ppid,args -p 84254 2>&1; echo "---"; lsof -nP -iTCP:9119 -sTCP:LISTEN; echo "---"; pgrep -fl hermes | head -5
+Filter: type to search
+
+→ Allow once                      Approve only this request
+  Deny
+
+Type to filter · Up/Down choose · Ctrl+O details · Enter confirm · Esc cancel
+EOF
+new_prompt_pane "t14-proc" "$P"
+eval "\"$DELEGATE\" $(deleg_args t14-proc) t14-proc" >/dev/null 2>&1
+assert_contains "$SCRATCH/t14-proc.approvals.log" "class=proc-readonly option=Enter" "proc-readonly auto-answered (Enter on Allow once)"
+if grep -q "approval:escalate" "$SCRATCH/t14-proc.approvals.log"; then
+  bad "proc-readonly did not escalate"
+else
+  ok "proc-readonly did not escalate"
+fi
+
+# ---------------------------------------------------------------- scenario 15
+# kill/pkill are NOT process inspection: escalate untouched
+note ""
+note "== scenario 15: kill escalates untouched =="
+P="$SCRATCH/p15.txt"
+cat >"$P" <<EOF
+Permission · Bash
+High risk tools require explicit approval
+
+ Risk: high
+ kill -9 84254; pkill -f zcode-auto
+Filter: type to search
+
+→ Allow once                      Approve only this request
+  Deny
+
+Type to filter · Up/Down choose · Ctrl+O details · Enter confirm · Esc cancel
+EOF
+new_prompt_pane "t15-kill" "$P"
+eval "\"$DELEGATE\" $(deleg_args t15-kill) t15-kill" >/dev/null 2>&1
+assert_contains "$SCRATCH/t15-kill.approvals.log" "approval:escalate fp=" "kill/pkill escalated"
+if grep -q "approval:auto" "$SCRATCH/t15-kill.approvals.log"; then
+  bad "kill sent no keys"
+else
+  ok "kill sent no keys"
+fi
+
+# ---------------------------------------------------------------- scenario 16
+# long-diff Write dialog (live-caught detection gap): options sit ~27 lines
+# below the header — must be detected and escalated (writes to LaunchAgents
+# are not allowlisted), never answered
+note ""
+note "== scenario 16: long-diff Write dialog detected + escalated =="
+P="$SCRATCH/p16.txt"
+{ echo "Permission · Write"
+  echo "Risk: medium"
+  echo "● Write /Users/wesleymatos/Library/LaunchAgents/com.x.plist +6 -0"
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do echo "     $_i │+ <line of plist diff>"; done
+  echo "Filter: type to search"
+  echo "→ Allow once                      Approve only this request"
+  echo "  Deny"
+  echo "Type to filter · Up/Down choose · Ctrl+O details · Enter confirm · Esc cancel"
+} >"$P"
+new_prompt_pane "t16-longdiff" "$P"
+if FLEET_ROOT="$SCRATCH" "$DELEGATE" classify --session "$SESSION" t16-longdiff | grep -q "^approval-dialog ● Write"; then
+  ok "classify: long-diff Write dialog detected despite distant options"
+else
+  bad "classify: long-diff Write dialog detected despite distant options"
+fi
+eval "\"$DELEGATE\" $(deleg_args t16-longdiff) t16-longdiff" >/dev/null 2>&1
+assert_contains "$SCRATCH/t16-longdiff.approvals.log" "approval:escalate fp=" "long-diff Write escalated"
+if grep -q "approval:auto" "$SCRATCH/t16-longdiff.approvals.log"; then
+  bad "long-diff Write sent no keys"
+else
+  ok "long-diff Write sent no keys"
+fi
+
 note ""
 note "=== $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
